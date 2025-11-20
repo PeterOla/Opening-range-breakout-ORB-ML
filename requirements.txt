@@ -1,0 +1,22 @@
+# ORB Strategy Backtest Dependencies
+
+# Core data manipulation
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Market data & calendars
+polygon-api-client>=1.12.0
+pandas_market_calendars>=4.3.0
+
+# Statistics & analysis
+scipy>=1.11.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Config & utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Optional: faster parquet I/O
+pyarrow>=12.0.0

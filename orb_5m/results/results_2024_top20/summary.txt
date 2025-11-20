@@ -1,0 +1,10 @@
+=== 2024 Portfolio Summary ===
+
+Initial equity: $1,000.00
+Final equity: $44,865.12
+Total return: 4386.51%
+Number of trades: 5040
+Win rate: 15.91%
+Profit factor: 1.86
+Max drawdown: -21.21%
+CAGR: 4433.64%

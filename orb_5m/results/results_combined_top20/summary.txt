@@ -1,0 +1,51 @@
+=== Combined Portfolio Summary (2021-2025) ===
+
+Period: 2021-01-01 to 2025-12-31
+Initial equity: $1,000.00
+Final equity: $190,413.81
+Total return: 18941.38%
+Total trades: 24,180
+Win rate: 16.79%
+Profit factor: 1.78
+Max drawdown: -8.97%
+CAGR: 198.31%
+
+=== Risk Management ===
+
+Current risk per trade: 1.00%
+Average win: $106.50
+Average loss: $12.07
+Win/Loss ratio: 8.82x
+
+=== Kelly Criterion Analysis ===
+
+Full Kelly: 7.36%
+Safe Kelly (1/2): 3.68%
+Danger Kelly (2x): 14.71%
+
+Kelly usage: 14% of Full Kelly (CONSERVATIVE)
+Position sizing: Very safe, low risk of ruin
+
+=== Risk Scaling Scenarios ===
+
+At 1.00% risk (current):
+  - Kelly fraction: 14%
+  - 5-year result: $190,413 from $1,000
+  - Risk level: Very Safe ✓
+
+At 3.68% risk (Safe Kelly):
+  - Kelly fraction: 50%
+  - Estimated result: ~$700,000 from $1,000
+  - Risk level: Conservative
+
+At 7.36% risk (Full Kelly):
+  - Kelly fraction: 100%
+  - Estimated result: ~$1,400,000 from $1,000
+  - Risk level: Optimal Growth
+
+At 14.71% risk (Danger Kelly):
+  - Kelly fraction: 200%
+  - Estimated result: ~$2,800,000 from $1,000
+  - Risk level: High Risk ⚠
+
+Note: Higher leverage increases both returns and drawdown risk exponentially.

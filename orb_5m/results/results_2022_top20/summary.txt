@@ -1,0 +1,10 @@
+=== 2022 Portfolio Summary ===
+
+Initial equity: $1,000.00
+Final equity: $38,317.88
+Total return: 3731.79%
+Number of trades: 5020
+Win rate: 18.82%
+Profit factor: 1.76
+Max drawdown: -11.88%
+CAGR: 3889.75%

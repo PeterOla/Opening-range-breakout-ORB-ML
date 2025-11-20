@@ -1,0 +1,10 @@
+=== 2021 Portfolio Summary ===
+
+Initial equity: $1,000.00
+Final equity: $34,342.24
+Total return: 3334.22%
+Number of trades: 4760
+Win rate: 16.72%
+Profit factor: 1.75
+Max drawdown: -8.97%
+CAGR: 4354.07%
