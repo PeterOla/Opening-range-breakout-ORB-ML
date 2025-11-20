@@ -141,8 +141,11 @@ class MLPredictor:
         features.update(calculate_volatility_metrics(bars_today, bars_daily_prev))
         
         # 4. Market Context
-        if self.uses_market_context:
-            features.update(calculate_market_context(str(target_date), spy_df, qqq_df, vix_df))
+        # Always calculate market context if data is available, even if not used by model
+        # This prevents "missing feature" errors if the model expects it but self.uses_market_context is False
+        # (which shouldn't happen if config is correct, but safety first)
+        if not spy_df.empty and not qqq_df.empty and not vix_df.empty:
+             features.update(calculate_market_context(str(target_date), spy_df, qqq_df, vix_df))
         
         # 5. Temporal
         features.update(calculate_temporal_metrics(str(target_date)))

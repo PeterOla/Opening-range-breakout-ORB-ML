@@ -61,9 +61,9 @@ def run_experiment(exp_id, strategy_type, universe_size, model_type, use_context
     
     if "ML" in strategy_type:
         use_ml = True
-        if "XGBoost" in model_type:
+        if "XGBoost" in model_type or "Dual Model" in model_type:
             ml_prefix = "xgb_context" if use_context else "xgb_nocontext"
-        elif "LogReg" in model_type:
+        elif "LogReg" in model_type or "Logistic" in model_type:
             ml_prefix = "logreg_context" if use_context else "logreg_nocontext"
         
         ml_feats = "final_selected_features" if use_context else "no_market_context_features"
@@ -102,6 +102,13 @@ def run_experiment(exp_id, strategy_type, universe_size, model_type, use_context
         return None
         
     full_df = pd.concat(all_trades, ignore_index=True)
+    
+    # Save Trades Log
+    trades_dir = RESULTS_DIR / "trades"
+    trades_dir.mkdir(parents=True, exist_ok=True)
+    trades_file = trades_dir / f"trades_exp_{exp_id}.csv"
+    full_df.to_csv(trades_file, index=False)
+    print(f"Saved {len(full_df)} trades to {trades_file}")
     
     # 4. Calculate Metrics
     # Sizing: Fixed vs Kelly
@@ -151,6 +158,8 @@ def run_experiment(exp_id, strategy_type, universe_size, model_type, use_context
         "model_type": model_type,
         "use_context": use_context,
         "sizing_method": sizing_method,
+        "start_date": START_DATE,
+        "end_date": END_DATE,
         "trades": total_trades,
         "win_rate": win_rate,
         "profit_factor": profit_factor,
@@ -180,14 +189,28 @@ def main():
     
     results = []
     
+    # Load existing results if any to append
+    results_path = RESULTS_DIR / "master_comparison.csv"
+    if results_path.exists():
+        existing_df = pd.read_csv(results_path)
+        results = existing_df.to_dict('records')
+        print(f"Loaded {len(results)} existing results.")
+    
     for exp in experiments:
+        # Check if already run
+        if any(r['experiment_id'] == exp[0] for r in results):
+            print(f"Skipping Experiment {exp[0]} (Already completed)")
+            continue
+            
         res = run_experiment(*exp)
         if res:
             results.append(res)
+            # Save incrementally
+            pd.DataFrame(results).to_csv(results_path, index=False)
             
     # Save Master CSV
     df = pd.DataFrame(results)
-    df.to_csv(RESULTS_DIR / "master_comparison.csv", index=False)
+    df.to_csv(results_path, index=False)
     print("\n=== Master Comparison Complete ===")
     print(df)
 
