@@ -6,7 +6,7 @@
 - Only include the **minimum code** needed to answer the question.
 - If multiple options exist, list them briefly and **recommend one**.
 - Always highlight the **next concrete action** I should take (e.g. "Next: run X", "Next: open file Y").
-- I have ADHD:
+- Important:
   - Prefer **step-by-step lists**.
   - Avoid long theory unless I explicitly ask for details.
   - Prioritize **practical, actionable** guidance over abstract discussion.

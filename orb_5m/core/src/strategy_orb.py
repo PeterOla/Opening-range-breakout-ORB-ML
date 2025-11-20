@@ -59,6 +59,8 @@ def run_orb_single_symbol(
     min_atr: float = 0.5,
     use_ml: bool = False,
     ml_threshold: float = 0.60,
+    ml_model_prefix: str = "xgb_context",
+    ml_feature_set: str = "final_selected_features",
     valid_dates: Optional[list] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Run a simple ORB strategy for one symbol.
@@ -92,8 +94,8 @@ def run_orb_single_symbol(
     if use_ml:
         try:
             from ml_orb_5m.src.inference.predictor import MLPredictor
-            print(f"Initializing ML Predictor (Threshold: {ml_threshold})...")
-            ml_predictor = MLPredictor(ML_MODELS_DIR, ML_CONFIG_PATH)
+            print(f"Initializing ML Predictor (Threshold: {ml_threshold}, Model: {ml_model_prefix})...")
+            ml_predictor = MLPredictor(ML_MODELS_DIR, ML_CONFIG_PATH, model_prefix=ml_model_prefix, feature_set_key=ml_feature_set)
             
             # Load Market Context Data
             if ml_predictor.uses_market_context:

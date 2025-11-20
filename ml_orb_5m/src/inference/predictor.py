@@ -32,9 +32,11 @@ from ml_orb_5m.src.features.market_context import (
 )
 
 class MLPredictor:
-    def __init__(self, models_dir: Path, config_path: Path):
+    def __init__(self, models_dir: Path, config_path: Path, model_prefix: str = "xgb_context", feature_set_key: str = "final_selected_features"):
         self.models_dir = models_dir
         self.config_path = config_path
+        self.model_prefix = model_prefix
+        self.feature_set_key = feature_set_key
         self.artifacts = {}
         self.features = []
         self._load_artifacts()
@@ -44,24 +46,34 @@ class MLPredictor:
         with open(self.config_path, "r") as f:
             config = json.load(f)
         
-        # Prefer 'final_selected_features'
-        if "final_selected_features" in config:
-            self.features = config["final_selected_features"]
-        elif "no_market_context_features" in config:
-            self.features = config["no_market_context_features"]
+        # Load features based on key
+        if self.feature_set_key in config:
+            self.features = config[self.feature_set_key]
         else:
-            self.features = config["all_features"]
+            print(f"Warning: Feature set '{self.feature_set_key}' not found. Falling back to 'final_selected_features'.")
+            self.features = config.get("final_selected_features", config.get("all_features"))
             
         # Check if we need market context
         self.uses_market_context = any(f.startswith(('spy', 'qqq', 'vix')) for f in self.features)
         
-        # Load Dual Models
+        # Load Dual Models with prefix
+        # e.g. xgb_context_long_model.pkl
         for side in ['long', 'short']:
-            self.artifacts[side] = {
-                'model': joblib.load(self.models_dir / f"{side}_model.pkl"),
-                'imputer': joblib.load(self.models_dir / f"{side}_imputer.pkl"),
-                'scaler': joblib.load(self.models_dir / f"{side}_scaler.pkl")
-            }
+            base_name = f"{self.model_prefix}_{side}"
+            try:
+                self.artifacts[side] = {
+                    'model': joblib.load(self.models_dir / f"{base_name}_model.pkl"),
+                    'imputer': joblib.load(self.models_dir / f"{base_name}_imputer.pkl"),
+                    'scaler': joblib.load(self.models_dir / f"{base_name}_scaler.pkl")
+                }
+            except FileNotFoundError:
+                # Fallback for backward compatibility or if prefix is empty
+                print(f"Warning: Model {base_name} not found. Trying legacy format {side}_model.pkl")
+                self.artifacts[side] = {
+                    'model': joblib.load(self.models_dir / f"{side}_model.pkl"),
+                    'imputer': joblib.load(self.models_dir / f"{side}_imputer.pkl"),
+                    'scaler': joblib.load(self.models_dir / f"{side}_scaler.pkl")
+                }
             
     def calculate_features_live(self, symbol: str, date, bars_5m: pd.DataFrame, bars_daily: pd.DataFrame, 
                               spy_df: pd.DataFrame, qqq_df: pd.DataFrame, vix_df: pd.DataFrame) -> pd.Series:
