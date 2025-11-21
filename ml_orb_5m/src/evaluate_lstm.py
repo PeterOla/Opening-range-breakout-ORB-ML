@@ -29,8 +29,8 @@ def evaluate_model_predictions(trades_file: str, model_path: str):
     
     # 2. Load Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Updated input_dim to 10 to match training
-    model = ORBLSTM(input_dim=10, hidden_dim=64, num_layers=2, output_dim=1).to(device)
+    # Updated to match training architecture: 128 hidden, 3 layers
+    model = ORBLSTM(input_dim=10, hidden_dim=128, num_layers=3, output_dim=1).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     

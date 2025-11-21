@@ -78,24 +78,27 @@ def train_model(
         print("Dataset is empty. Exiting.")
         return
 
-    # Chronological Split
-    # The dataset is already sorted by time in ORBSequenceDataset
-    train_size = int(len(full_dataset) * split_ratio)
-    test_size = len(full_dataset) - train_size
+    # Proper Chronological Split: Train 70% / Val 15% / Test 15%
+    # This prevents overlap and allows proper calibration testing
+    train_size = int(len(full_dataset) * 0.70)
+    val_size = int(len(full_dataset) * 0.15)
+    test_size = len(full_dataset) - train_size - val_size
     
     train_dataset = torch.utils.data.Subset(full_dataset, range(0, train_size))
-    test_dataset = torch.utils.data.Subset(full_dataset, range(train_size, len(full_dataset)))
+    val_dataset = torch.utils.data.Subset(full_dataset, range(train_size, train_size + val_size))
+    test_dataset = torch.utils.data.Subset(full_dataset, range(train_size + val_size, len(full_dataset)))
     
     # Standard DataLoader (Shuffle training data for SGD, but NO WeightedRandomSampler)
     # Added pin_memory and num_workers for speed
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=pin_memory, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, num_workers=num_workers)
     
-    print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)} samples")
 
     # 2. Initialize Model
-    # Updated input_dim to 10 (added RSI, ATR, RelVol, Shadows)
-    model = ORBLSTM(input_dim=10, hidden_dim=64, num_layers=2, output_dim=1).to(device)
+    # Updated architecture: 128 hidden units, 3 layers for better capacity
+    model = ORBLSTM(input_dim=10, hidden_dim=128, num_layers=3, output_dim=1).to(device)
     
     # Calculate Class Weights for Loss Function
     train_labels = [y.item() for _, y in train_dataset]
@@ -150,7 +153,7 @@ def train_model(
         all_val_targets = []
         
         with torch.no_grad():
-            for X_batch, y_batch in test_loader:
+            for X_batch, y_batch in val_loader:
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device).float().unsqueeze(1)
                 outputs = model(X_batch)
                 loss = criterion(outputs, y_batch)

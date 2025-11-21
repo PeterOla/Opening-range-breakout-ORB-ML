@@ -28,7 +28,7 @@ def run_backtest(trades_file: str, model_path: str, output_file: str):
     print(f"Loaded {len(dataset)} samples.")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ORBLSTM(input_dim=10, hidden_dim=64, num_layers=2, output_dim=1).to(device)
+    model = ORBLSTM(input_dim=10, hidden_dim=128, num_layers=3, output_dim=1).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     
