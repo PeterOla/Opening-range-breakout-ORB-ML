@@ -16,3 +16,10 @@ This project applies Machine Learning (XGBoost + Logistic Regression Ensemble) t
 ## Usage
 1. **Train Models**: `python src/models/train_dual_models.py`
 2. **Run Backtest**: `python src/backtest/ml_backtest_dual.py`
+
+## Results locations & conventions
+- Models: `ml_orb_5m/models/saved_models/` (pickles / weights)
+- Backtests: `ml_orb_5m/results/backtest/` (general backtest outputs)
+- Top20-specific outputs: `ml_orb_5m/results/backtest_top20/`
+
+If you find results in the repo root, please use the `scripts/enforce_result_paths.ps1` script to move them into canonical locations; or run `scripts/move_root_results_to_ml.ps1` to copy older results safely.

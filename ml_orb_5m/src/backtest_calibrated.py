@@ -343,7 +343,7 @@ def main():
     
     # 7. Save comparison
     results_df = pd.DataFrame(results)
-    comparison_file = PROJECT_ROOT / "master_comparison_lstm.csv"
+    comparison_file = output_dir / "master_comparison_lstm.csv"
     results_df.to_csv(comparison_file, index=False)
     
     print("\n" + "="*100)

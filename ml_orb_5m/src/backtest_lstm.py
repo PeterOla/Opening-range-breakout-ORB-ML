@@ -220,12 +220,15 @@ def run_backtest(trades_file: str, model_path: str, output_file: str):
         
         # Save detailed files
         if not daily_equity.empty:
-            equity_file = PROJECT_ROOT / f"equity_curve_{name}.csv"
+            # Ensure canonical backtest output folder exists
+            output_folder = PROJECT_ROOT / "ml_orb_5m" / "results" / "backtest"
+            output_folder.mkdir(parents=True, exist_ok=True)
+            equity_file = output_folder / f"equity_curve_{name}.csv"
             daily_equity.to_csv(equity_file, index=False)
             print(f"  Saved equity curve to {equity_file.name}")
         
         if not trade_log.empty:
-            trades_file_out = PROJECT_ROOT / f"trade_log_{name}.csv"
+            trades_file_out = output_folder / f"trade_log_{name}.csv"
             trade_log.to_csv(trades_file_out, index=False)
             print(f"  Saved trade log to {trades_file_out.name}")
 
@@ -251,6 +254,8 @@ def run_backtest(trades_file: str, model_path: str, output_file: str):
 if __name__ == "__main__":
     trades_file = PROJECT_ROOT / "orb_5m" / "results" / "results_combined_top50" / "all_trades.csv"
     model_path = PROJECT_ROOT / "ml_orb_5m" / "models" / "saved_models" / "lstm_results_combined_top50_best.pth"
-    output_file = PROJECT_ROOT / "master_comparison_lstm.csv"
+    output_file = PROJECT_ROOT / "ml_orb_5m" / "results" / "backtest" / "master_comparison_lstm.csv"
+    # Ensure output folder exists
+    (PROJECT_ROOT / "ml_orb_5m" / "results" / "backtest").mkdir(parents=True, exist_ok=True)
     
     run_backtest(str(trades_file), str(model_path), str(output_file))
