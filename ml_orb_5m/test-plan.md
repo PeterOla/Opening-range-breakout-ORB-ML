@@ -1,6 +1,6 @@
 Scenario Structure
 
-We’ll compare two brokers: IBKR (with commissions) and Alpaca (commission-free), and test different risk/leverage levels per trade:
+We’ll compare two brokers: IBKR (with commissions) and Alpaca (commission-free), and test different risk/leverage levels per trade
 
 Scenario	Risk per Trade	Leverage	Broker	Trade Costs	Notes
 A	1%	None	IBKR	Commissions + slippage	Conservative, low friction
