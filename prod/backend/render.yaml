@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: orb-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_API_SECRET
+        sync: false
+      - key: ALPACA_PAPER
+        value: "True"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: orb-db
+          property: connectionString
+    healthCheckPath: /health
+
+databases:
+  - name: orb-db
+    plan: free
+    databaseName: trading
+    user: postgres
