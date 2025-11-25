@@ -7,10 +7,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.routes import positions, account, trades, signals, metrics, system
+from api.routes import positions, account, trades, signals, metrics, system, scanner, execution
 from api.websocket import router as ws_router
 from db.database import engine, Base
 from core.config import settings
+from services.scheduler import start_scheduler, stop_scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -32,9 +33,14 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created")
     
+    # Start EOD scheduler
+    start_scheduler()
+    logger.info("EOD scheduler started")
+    
     yield
     
     # Shutdown
+    stop_scheduler()
     logger.info("Shutting down ORB Trading System")
 
 
@@ -48,7 +54,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,6 +67,8 @@ app.include_router(trades.router, prefix="/api", tags=["Trades"])
 app.include_router(signals.router, prefix="/api", tags=["Signals"])
 app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
 app.include_router(system.router, prefix="/api", tags=["System"])
+app.include_router(scanner.router, prefix="/api", tags=["Scanner"])
+app.include_router(execution.router, prefix="/api", tags=["Execution"])
 app.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
 
 

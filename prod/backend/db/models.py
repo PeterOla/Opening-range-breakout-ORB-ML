@@ -85,7 +85,7 @@ class SystemLog(Base):
     level = Column(SQLEnum(LogLevel), nullable=False, index=True)
     component = Column(String(50), nullable=False, index=True)
     message = Column(String(1000), nullable=False)
-    metadata = Column(String(500), nullable=True)
+    extra_data = Column(String(500), nullable=True)
 
 
 class DailyMetrics(Base):
@@ -102,3 +102,73 @@ class DailyMetrics(Base):
     win_rate = Column(Float, default=0.0)
     starting_equity = Column(Float, nullable=False)
     ending_equity = Column(Float, nullable=False)
+
+
+class DailyBar(Base):
+    """
+    Historical daily OHLCV bars from Polygon.
+    Rolling 30-day window for ATR and avg volume calculation.
+    """
+    __tablename__ = "daily_bars"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    date = Column(DateTime, nullable=False, index=True)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    vwap = Column(Float, nullable=True)
+    
+    # Pre-computed metrics (updated nightly)
+    atr_14 = Column(Float, nullable=True)
+    avg_volume_14 = Column(Float, nullable=True)
+    
+    __table_args__ = (
+        # Unique constraint on symbol + date
+        {"sqlite_autoincrement": True},
+    )
+
+
+class OpeningRange(Base):
+    """
+    Opening range data (first 5-min bar) captured each trading day.
+    Stores candidates that pass initial filters for review/debugging.
+    """
+    __tablename__ = "opening_ranges"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    date = Column(DateTime, nullable=False, index=True)
+    
+    # Opening range bar data
+    or_open = Column(Float, nullable=False)
+    or_high = Column(Float, nullable=False)
+    or_low = Column(Float, nullable=False)
+    or_close = Column(Float, nullable=False)
+    or_volume = Column(Float, nullable=False)
+    
+    # Direction: 1 = bullish (long), -1 = bearish (short), 0 = doji (skip)
+    direction = Column(Integer, nullable=False)
+    
+    # Computed metrics
+    rvol = Column(Float, nullable=True)  # Relative volume
+    atr = Column(Float, nullable=True)   # 14-day ATR at time of scan
+    avg_volume = Column(Float, nullable=True)  # 14-day avg volume
+    
+    # Filter results
+    passed_filters = Column(Boolean, default=False)  # Met all criteria
+    rank = Column(Integer, nullable=True)  # Rank by RVOL (1-20 = top 20)
+    
+    # Entry levels
+    entry_price = Column(Float, nullable=True)  # OR high (long) or OR low (short)
+    stop_price = Column(Float, nullable=True)   # 10% ATR from entry
+    
+    # Outcome tracking
+    signal_generated = Column(Boolean, default=False)
+    order_placed = Column(Boolean, default=False)
+    
+    __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )

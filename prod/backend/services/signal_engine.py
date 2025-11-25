@@ -1,0 +1,309 @@
+"""
+Signal Engine for ORB Strategy.
+
+Generates trading signals from scanned candidates:
+1. Takes top N candidates from scanner
+2. Calculates entry and stop levels
+3. Computes position size based on risk
+4. Creates Signal records ready for execution
+"""
+from datetime import datetime, time
+from typing import Optional
+from zoneinfo import ZoneInfo
+from sqlalchemy.orm import Session
+from sqlalchemy import and_
+
+from db.database import SessionLocal
+from db.models import Signal, OpeningRange, OrderSide, OrderStatus
+from core.config import settings
+
+
+ET = ZoneInfo("America/New_York")
+
+
+def calculate_position_size(
+    entry_price: float,
+    stop_price: float,
+    account_equity: float,
+    risk_per_trade_pct: float = 0.01,
+    max_position_value: Optional[float] = None,
+) -> int:
+    """
+    Calculate position size based on risk management rules.
+    
+    Args:
+        entry_price: Expected entry price
+        stop_price: Stop loss price
+        account_equity: Total account equity
+        risk_per_trade_pct: Risk per trade as decimal (0.01 = 1%)
+        max_position_value: Maximum position value (optional)
+        
+    Returns:
+        Number of shares to trade
+    """
+    # Calculate risk per share
+    risk_per_share = abs(entry_price - stop_price)
+    
+    if risk_per_share <= 0:
+        return 0
+    
+    # Calculate dollar risk
+    dollar_risk = account_equity * risk_per_trade_pct
+    
+    # Calculate shares based on risk
+    shares = int(dollar_risk / risk_per_share)
+    
+    # Apply max position value constraint if provided
+    if max_position_value:
+        max_shares_by_value = int(max_position_value / entry_price)
+        shares = min(shares, max_shares_by_value)
+    
+    return max(shares, 0)
+
+
+def generate_signals_from_candidates(
+    candidates: list[dict],
+    account_equity: float,
+    risk_per_trade_pct: float = None,
+    max_positions: int = None,
+    save_to_db: bool = True,
+) -> list[dict]:
+    """
+    Generate trading signals from scanner candidates.
+    
+    Args:
+        candidates: List of candidates from orb_scanner.scan_orb_candidates()
+        account_equity: Current account equity for position sizing
+        risk_per_trade_pct: Risk per trade (defaults to settings)
+        max_positions: Maximum number of signals to generate (defaults to settings)
+        save_to_db: Whether to save signals to database
+        
+    Returns:
+        List of signal dicts ready for execution
+    """
+    if risk_per_trade_pct is None:
+        risk_per_trade_pct = settings.POSITION_SIZE_PCT
+    
+    if max_positions is None:
+        max_positions = settings.MAX_OPEN_POSITIONS
+    
+    db = SessionLocal() if save_to_db else None
+    signals = []
+    
+    try:
+        # Take only top N candidates
+        top_candidates = candidates[:max_positions]
+        
+        for candidate in top_candidates:
+            symbol = candidate["symbol"]
+            direction = candidate["direction"]
+            entry_price = candidate["entry_price"]
+            stop_price = candidate["stop_price"]
+            
+            # Determine side
+            side = OrderSide.LONG if direction == 1 else OrderSide.SHORT
+            
+            # Calculate position size
+            shares = calculate_position_size(
+                entry_price=entry_price,
+                stop_price=stop_price,
+                account_equity=account_equity,
+                risk_per_trade_pct=risk_per_trade_pct,
+            )
+            
+            if shares <= 0:
+                continue
+            
+            signal_data = {
+                "symbol": symbol,
+                "side": side.value,
+                "direction": direction,
+                "entry_price": entry_price,
+                "stop_price": stop_price,
+                "shares": shares,
+                "rvol": candidate.get("rvol"),
+                "atr": candidate.get("atr"),
+                "or_high": candidate.get("or_high"),
+                "or_low": candidate.get("or_low"),
+                "rank": candidate.get("rank"),
+                "risk_amount": shares * abs(entry_price - stop_price),
+                "position_value": shares * entry_price,
+            }
+            
+            signals.append(signal_data)
+            
+            # Save to database
+            if save_to_db and db:
+                db_signal = Signal(
+                    timestamp=datetime.now(ET),
+                    ticker=symbol,
+                    side=side,
+                    confidence=candidate.get("rvol", 1.0),  # Use RVOL as confidence proxy
+                    entry_price=entry_price,
+                    stop_price=stop_price,
+                    status=OrderStatus.PENDING,
+                )
+                db.add(db_signal)
+        
+        if save_to_db and db:
+            db.commit()
+            
+            # Update opening_ranges to mark signals generated
+            for signal in signals:
+                db.query(OpeningRange).filter(
+                    and_(
+                        OpeningRange.symbol == signal["symbol"],
+                        OpeningRange.date == datetime.now(ET).date(),
+                    )
+                ).update({"signal_generated": True})
+            
+            db.commit()
+        
+        return signals
+    
+    except Exception as e:
+        if db:
+            db.rollback()
+        raise e
+    
+    finally:
+        if db:
+            db.close()
+
+
+async def run_signal_generation(
+    account_equity: float,
+    risk_per_trade_pct: float = None,
+    max_positions: int = None,
+) -> dict:
+    """
+    Full signal generation pipeline.
+    
+    1. Get today's scanned candidates from database
+    2. Generate signals with position sizing
+    3. Return signals ready for execution
+    
+    Args:
+        account_equity: Current account equity
+        risk_per_trade_pct: Risk per trade percentage
+        max_positions: Maximum positions to open
+        
+    Returns:
+        Dict with status and generated signals
+    """
+    from services.orb_scanner import get_todays_candidates
+    
+    try:
+        # Get today's candidates
+        candidates = await get_todays_candidates(top_n=max_positions or settings.MAX_OPEN_POSITIONS)
+        
+        if not candidates:
+            return {
+                "status": "no_candidates",
+                "message": "No candidates found for today. Run scanner first.",
+                "signals": [],
+            }
+        
+        # Generate signals
+        signals = generate_signals_from_candidates(
+            candidates=candidates,
+            account_equity=account_equity,
+            risk_per_trade_pct=risk_per_trade_pct,
+            max_positions=max_positions,
+            save_to_db=True,
+        )
+        
+        return {
+            "status": "success",
+            "timestamp": datetime.now(ET).isoformat(),
+            "candidates_available": len(candidates),
+            "signals_generated": len(signals),
+            "total_risk": sum(s["risk_amount"] for s in signals),
+            "total_position_value": sum(s["position_value"] for s in signals),
+            "signals": signals,
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "signals": [],
+        }
+
+
+def get_pending_signals(db: Optional[Session] = None) -> list[dict]:
+    """
+    Get all pending signals that haven't been executed yet.
+    """
+    close_session = False
+    if db is None:
+        db = SessionLocal()
+        close_session = True
+    
+    try:
+        pending = db.query(Signal).filter(
+            Signal.status == OrderStatus.PENDING
+        ).order_by(Signal.timestamp.desc()).all()
+        
+        return [
+            {
+                "id": s.id,
+                "symbol": s.ticker,
+                "side": s.side.value,
+                "entry_price": s.entry_price,
+                "stop_price": s.stop_price,
+                "confidence": s.confidence,
+                "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+            }
+            for s in pending
+        ]
+    
+    finally:
+        if close_session:
+            db.close()
+
+
+def update_signal_status(
+    signal_id: int,
+    status: OrderStatus,
+    order_id: Optional[str] = None,
+    filled_price: Optional[float] = None,
+    rejection_reason: Optional[str] = None,
+    db: Optional[Session] = None,
+) -> bool:
+    """
+    Update signal status after order placement.
+    """
+    close_session = False
+    if db is None:
+        db = SessionLocal()
+        close_session = True
+    
+    try:
+        signal = db.query(Signal).filter(Signal.id == signal_id).first()
+        
+        if not signal:
+            return False
+        
+        signal.status = status
+        
+        if order_id:
+            signal.order_id = order_id
+        
+        if filled_price:
+            signal.filled_price = filled_price
+            signal.filled_time = datetime.now(ET)
+        
+        if rejection_reason:
+            signal.rejection_reason = rejection_reason
+        
+        db.commit()
+        return True
+    
+    except Exception as e:
+        db.rollback()
+        return False
+    
+    finally:
+        if close_session:
+            db.close()

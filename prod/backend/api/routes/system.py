@@ -11,6 +11,7 @@ from db.database import get_db
 from db.models import SystemLog, LogLevel
 from shared.schemas import LogResponse, KillSwitchResponse
 from core.config import settings
+from services.scheduler import get_scheduled_jobs
 
 router = APIRouter()
 
@@ -77,3 +78,13 @@ async def get_logs(
         )
         for log in logs
     ]
+
+
+@router.get("/scheduler")
+async def get_scheduler_status():
+    """Get scheduled jobs and their next run times."""
+    jobs = get_scheduled_jobs()
+    return {
+        "status": "running" if jobs else "no_jobs",
+        "jobs": jobs,
+    }
