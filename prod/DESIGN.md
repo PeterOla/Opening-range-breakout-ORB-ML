@@ -428,7 +428,7 @@ CREATE TABLE opening_ranges (
 12. **Paper trade validation** — 2-4 weeks testing
 
 ---
-
+                                      
 ## Daily Operations Workflow
 
 ```

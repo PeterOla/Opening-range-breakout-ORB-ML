@@ -11,8 +11,15 @@ from zoneinfo import ZoneInfo
 from services.orb_scanner import scan_orb_candidates, get_todays_candidates
 from services.data_sync import (
     sync_universe_daily_bars,
+    sync_daily_bars_fast,
     cleanup_old_bars,
     get_universe_with_metrics,
+)
+from services.ticker_sync import (
+    sync_tickers_from_polygon,
+    get_active_tickers,
+    get_ticker_stats,
+    update_ticker_filters,
 )
 
 
@@ -51,8 +58,13 @@ class ScanCandidate(BaseModel):
 
 class DataSyncRequest(BaseModel):
     """Request body for data sync."""
-    symbols: list[str]
+    symbols: Optional[list[str]] = None  # If None, use active tickers from DB
     lookback_days: int = 30
+
+
+class TickerSyncRequest(BaseModel):
+    """Request body for ticker sync."""
+    include_delisted: bool = False
 
 
 # ============ Scanner Endpoints ============
@@ -124,18 +136,114 @@ async def get_today_candidates(
 
 # ============ Data Sync Endpoints ============
 
-@router.post("/sync")
-async def sync_daily_bars(request: DataSyncRequest):
+@router.post("/sync-tickers")
+async def sync_tickers(request: TickerSyncRequest = None):
     """
-    Sync daily bars from Polygon for specified symbols.
+    Sync stock ticker universe from Polygon.
+    
+    Fetches all NYSE/NASDAQ common stocks and stores in database.
+    Run this once to populate the universe, then periodically to update.
+    
+    Takes ~2-5 minutes depending on API rate limits.
+    """
+    include_delisted = request.include_delisted if request else False
+    result = await sync_tickers_from_polygon(include_delisted=include_delisted)
+    return result
+
+
+@router.post("/sync-daily")
+async def sync_daily_data(
+    lookback_days: int = Query(14, ge=7, le=30, description="Number of days to fetch"),
+):
+    """
+    Sync daily bars for ALL stocks from Polygon (fast method).
+    
+    Uses grouped daily endpoint: 1 API call = all stocks for 1 day.
+    For 14-day lookback: ~20 API calls total (vs thousands for per-symbol).
+    
+    This is the recommended method for nightly sync:
+    - Fetches OHLCV for all NYSE/NASDAQ stocks
+    - Computes ATR(14) and avg_volume(14) for each symbol
+    - Takes ~5 minutes for 14 days
+    
+    Use cases:
+    - Initial setup: Run with lookback_days=14
+    - Daily refresh: Run with lookback_days=3 (catches up weekends)
+    """
+    result = await sync_daily_bars_fast(lookback_days=lookback_days)
+    
+    # Update filter flags after sync
+    if result.get("status") == "success":
+        await update_ticker_filters()
+    
+    return result
+
+
+@router.get("/tickers")
+async def get_tickers(
+    active_only: bool = Query(True, description="Only return active tickers"),
+    limit: int = Query(None, description="Limit number of tickers returned"),
+):
+    """
+    Get ticker symbols from database.
+    
+    Use after running /scanner/sync-tickers.
+    """
+    symbols = get_active_tickers(limit=limit) if active_only else get_active_tickers(limit=limit)
+    return {
+        "status": "success",
+        "count": len(symbols),
+        "symbols": symbols[:100] if len(symbols) > 100 else symbols,  # Truncate for response size
+        "total": len(symbols),
+    }
+
+
+@router.get("/ticker-stats")
+async def ticker_stats():
+    """
+    Get statistics about the ticker universe.
+    """
+    stats = get_ticker_stats()
+    return {
+        "status": "success",
+        "stats": stats,
+    }
+
+
+@router.post("/sync")
+async def sync_daily_bars(request: DataSyncRequest = None):
+    """
+    Sync daily bars from Polygon for specified symbols (or all active tickers).
+    
+    If no symbols provided, uses active tickers from database.
+    Requires /scanner/sync-tickers to be run first if using DB tickers.
     
     This may take several minutes depending on the number of symbols
     and API rate limits (5 calls/min for Polygon Starter).
     """
+    if request and request.symbols:
+        symbols = request.symbols
+    else:
+        # Use active tickers from DB
+        symbols = get_active_tickers()
+        
+        if not symbols:
+            return {
+                "status": "error",
+                "error": "No tickers in database. Run /scanner/sync-tickers first.",
+            }
+    
+    lookback_days = request.lookback_days if request else 30
+    
     result = await sync_universe_daily_bars(
-        symbols=request.symbols,
-        lookback_days=request.lookback_days,
+        symbols=symbols,
+        lookback_days=lookback_days,
     )
+    
+    # Update filter flags after sync
+    if result.get("status") == "success":
+        await update_ticker_filters()
+    
     return result
 
 

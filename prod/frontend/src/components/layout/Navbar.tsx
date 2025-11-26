@@ -8,11 +8,13 @@ import {
   Signal, 
   History, 
   FileText,
-  Activity
+  Activity,
+  Radar
 } from 'lucide-react'
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/scanner', label: 'Scanner', icon: Radar },
   { href: '/signals', label: 'Signals', icon: Signal },
   { href: '/history', label: 'History', icon: History },
   { href: '/logs', label: 'Logs', icon: FileText },

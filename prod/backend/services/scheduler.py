@@ -2,9 +2,10 @@
 EOD Scheduler for ORB Strategy.
 
 Automates:
-1. 3:55 PM ET - Flatten all positions (EOD exit)
-2. 9:25 AM ET - Pre-market health check
-3. 4:05 PM ET - Daily P&L logging
+1. 6:00 PM ET - Nightly data sync (tickers + daily bars)
+2. 3:55 PM ET - Flatten all positions (EOD exit)
+3. 9:25 AM ET - Pre-market health check
+4. 4:05 PM ET - Daily P&L logging
 """
 import logging
 from datetime import datetime
@@ -19,6 +20,47 @@ ET = ZoneInfo("America/New_York")
 
 # Scheduler instance
 scheduler = AsyncIOScheduler(timezone=ET)
+
+
+async def job_nightly_data_sync():
+    """
+    6:00 PM ET - Nightly data sync (after market close).
+    
+    1. Sync ticker universe from Polygon (weekly on Sundays only)
+    2. Fetch last 14 days of daily bars for all stocks
+    3. Compute ATR(14) and avg_volume(14)
+    4. Update filter flags on tickers
+    """
+    from services.data_sync import sync_daily_bars_fast
+    from services.ticker_sync import sync_tickers_from_polygon, update_ticker_filters
+    
+    logger.info("🌙 NIGHTLY DATA SYNC triggered at 6:00 PM ET")
+    
+    try:
+        # Check if it's Sunday - sync tickers weekly
+        today = datetime.now(ET)
+        if today.weekday() == 6:  # Sunday
+            logger.info("📊 Sunday - syncing ticker universe...")
+            ticker_result = await sync_tickers_from_polygon(include_delisted=False)
+            logger.info(f"  Tickers: {ticker_result}")
+        
+        # Sync daily bars (every day)
+        logger.info("📈 Syncing daily bars (14 days)...")
+        bars_result = await sync_daily_bars_fast(lookback_days=14)
+        logger.info(f"  Bars: {bars_result}")
+        
+        # Update filter flags
+        if bars_result.get("status") == "success":
+            logger.info("🔄 Updating ticker filters...")
+            filter_result = await update_ticker_filters()
+            logger.info(f"  Filters: {filter_result}")
+        
+        logger.info("✅ Nightly data sync complete")
+        return {"status": "success", "bars": bars_result}
+    
+    except Exception as e:
+        logger.error(f"❌ Nightly data sync failed: {e}")
+        raise
 
 
 async def job_flatten_eod():
@@ -100,6 +142,36 @@ def start_scheduler():
     if scheduler.running:
         logger.info("Scheduler already running")
         return
+    
+    # Job 0: Nightly data sync at 6:00 PM ET (Mon-Fri)
+    scheduler.add_job(
+        job_nightly_data_sync,
+        CronTrigger(
+            hour=18,
+            minute=0,
+            day_of_week="mon-fri",
+            timezone=ET,
+        ),
+        id="nightly_data_sync",
+        name="Nightly Data Sync",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Nightly data sync at 6:00 PM ET (Mon-Fri)")
+    
+    # Also run on Sunday evening for weekend catch-up + ticker sync
+    scheduler.add_job(
+        job_nightly_data_sync,
+        CronTrigger(
+            hour=18,
+            minute=0,
+            day_of_week="sun",
+            timezone=ET,
+        ),
+        id="sunday_data_sync",
+        name="Sunday Data Sync + Tickers",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Sunday data sync at 6:00 PM ET")
     
     # Job 1: EOD Flatten at 3:55 PM ET (Mon-Fri)
     scheduler.add_job(

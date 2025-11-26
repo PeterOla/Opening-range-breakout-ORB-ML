@@ -4,6 +4,8 @@ Data synchronisation service.
 - Nightly job: Fetch 14-day daily bars from Polygon → daily_bars table
 - Calculate ATR(14) and avg_volume(14) for each symbol
 - Delete bars older than 30 days
+
+Uses grouped daily endpoint for efficiency (1 call = all stocks for 1 day).
 """
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,13 +13,28 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, delete
+import asyncio
 
 from db.database import SessionLocal
-from db.models import DailyBar
+from db.models import DailyBar, Ticker
 from services.polygon_client import get_polygon_client
 
 
 ET = ZoneInfo("America/New_York")
+
+
+def get_trading_days(start_date: datetime, end_date: datetime) -> list[datetime]:
+    """
+    Get list of trading days (weekdays only, excludes weekends).
+    Does not account for market holidays - Polygon returns empty for non-trading days.
+    """
+    days = []
+    current = start_date
+    while current <= end_date:
+        if current.weekday() < 5:  # Mon=0, Fri=4
+            days.append(current)
+        current += timedelta(days=1)
+    return days
 
 
 def compute_atr(bars: list[dict], period: int = 14) -> Optional[float]:
@@ -133,13 +150,14 @@ async def sync_universe_daily_bars(
 ) -> dict:
     """
     Sync daily bars for entire universe from Polygon.
-    Uses grouped daily endpoint for efficiency.
+    Uses grouped daily endpoint for efficiency (1 API call = all stocks for 1 day).
+    
+    For 14-day lookback: ~20 API calls (14 weekdays + buffer for holidays)
+    Much more efficient than per-symbol calls (1 call per symbol per day).
     
     Returns:
         Dict with sync stats
     """
-    import asyncio
-    
     db = SessionLocal()
     client = get_polygon_client()
     
@@ -147,32 +165,41 @@ async def sync_universe_daily_bars(
         end_date = datetime.now(ET).date()
         start_date = end_date - timedelta(days=lookback_days)
         
+        # Get trading days only
+        trading_days = get_trading_days(
+            datetime.combine(start_date, datetime.min.time()),
+            datetime.combine(end_date, datetime.min.time())
+        )
+        
         synced = 0
         failed = 0
+        symbols_set = set(symbols)  # Fast lookup
         
-        # Fetch each day's grouped data
-        current_date = start_date
-        while current_date <= end_date:
-            # Skip weekends
-            if current_date.weekday() >= 5:
-                current_date += timedelta(days=1)
-                continue
-            
-            print(f"Fetching grouped daily for {current_date}...")
+        print(f"Syncing {len(trading_days)} trading days for {len(symbols)} symbols...")
+        
+        for i, day in enumerate(trading_days):
+            print(f"[{i+1}/{len(trading_days)}] Fetching grouped daily for {day.strftime('%Y-%m-%d')}...")
             
             try:
-                grouped = await client.get_grouped_daily(datetime.combine(current_date, datetime.min.time()))
+                grouped = await client.get_grouped_daily(day)
+                
+                if not grouped:
+                    print(f"  No data for {day.strftime('%Y-%m-%d')} (likely holiday)")
+                    continue
+                
+                day_synced = 0
                 
                 # Filter to our symbols and insert
-                for symbol in symbols:
+                for symbol in symbols_set:
                     if symbol in grouped:
                         bar = grouped[symbol]
+                        bar_date = bar["timestamp"].date() if hasattr(bar["timestamp"], 'date') else bar["timestamp"]
                         
                         # Check if already exists
                         existing = db.query(DailyBar).filter(
                             and_(
                                 DailyBar.symbol == symbol,
-                                DailyBar.date == bar["timestamp"].date() if hasattr(bar["timestamp"], 'date') else bar["timestamp"],
+                                DailyBar.date == bar_date,
                             )
                         ).first()
                         
@@ -188,21 +215,25 @@ async def sync_universe_daily_bars(
                                 vwap=bar.get("vwap"),
                             )
                             db.add(db_bar)
-                            synced += 1
+                            day_synced += 1
                 
                 db.commit()
+                synced += day_synced
+                print(f"  ✓ Synced {day_synced} bars")
                 
             except Exception as e:
-                print(f"Error fetching {current_date}: {e}")
+                print(f"  ✗ Error fetching {day.strftime('%Y-%m-%d')}: {e}")
                 failed += 1
             
-            current_date += timedelta(days=1)
-            
-            # Rate limit: wait between days to respect 5 calls/min
-            await asyncio.sleep(15)
+            # Rate limit: Polygon free tier = 5 calls/min
+            # 12 seconds between calls keeps us safe
+            if i < len(trading_days) - 1:
+                await asyncio.sleep(12)
         
         # Now compute ATR and avg_volume for each symbol
-        print("Computing ATR and avg volume...")
+        print("\nComputing ATR(14) and avg_volume(14) for all symbols...")
+        updated_count = 0
+        
         for symbol in symbols:
             bars = db.query(DailyBar).filter(
                 DailyBar.symbol == symbol
@@ -221,14 +252,150 @@ async def sync_universe_daily_bars(
                 if bars:
                     bars[-1].atr_14 = atr_14
                     bars[-1].avg_volume_14 = avg_vol_14
+                    updated_count += 1
         
         db.commit()
+        print(f"  ✓ Updated metrics for {updated_count} symbols")
         
         return {
             "status": "success",
             "symbols_requested": len(symbols),
             "bars_synced": synced,
+            "days_processed": len(trading_days),
             "days_failed": failed,
+            "metrics_updated": updated_count,
+        }
+    
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "error": str(e)}
+    
+    finally:
+        db.close()
+
+
+async def sync_daily_bars_fast(lookback_days: int = 14) -> dict:
+    """
+    Fast sync: Fetch grouped daily bars for ALL stocks, then filter to active universe.
+    
+    This is the most efficient approach for syncing the entire universe:
+    - 1 API call per day (not 1 per symbol)
+    - For 14 days = ~20 API calls total
+    - Stores all NYSE/NASDAQ stocks automatically
+    
+    Use this for the nightly sync job.
+    
+    Returns:
+        Dict with sync stats
+    """
+    db = SessionLocal()
+    client = get_polygon_client()
+    
+    try:
+        end_date = datetime.now(ET).date()
+        start_date = end_date - timedelta(days=lookback_days + 7)  # Buffer for weekends/holidays
+        
+        trading_days = get_trading_days(
+            datetime.combine(start_date, datetime.min.time()),
+            datetime.combine(end_date, datetime.min.time())
+        )
+        
+        total_synced = 0
+        days_processed = 0
+        days_failed = 0
+        symbols_seen = set()
+        
+        print(f"Fast sync: {len(trading_days)} trading days...")
+        
+        for i, day in enumerate(trading_days):
+            print(f"[{i+1}/{len(trading_days)}] {day.strftime('%Y-%m-%d')}...", end=" ")
+            
+            try:
+                grouped = await client.get_grouped_daily(day)
+                
+                if not grouped:
+                    print("(no data - holiday?)")
+                    continue
+                
+                day_synced = 0
+                
+                # Insert all bars (no symbol filter - get everything)
+                for symbol, bar in grouped.items():
+                    # Skip non-standard tickers (warrants, units, etc.)
+                    if len(symbol) > 5 or any(c in symbol for c in ['.', '/']):
+                        continue
+                    
+                    symbols_seen.add(symbol)
+                    bar_date = bar["timestamp"].date() if hasattr(bar["timestamp"], 'date') else bar["timestamp"]
+                    
+                    # Upsert: check if exists
+                    existing = db.query(DailyBar).filter(
+                        and_(
+                            DailyBar.symbol == symbol,
+                            DailyBar.date == bar_date,
+                        )
+                    ).first()
+                    
+                    if not existing:
+                        db_bar = DailyBar(
+                            symbol=symbol,
+                            date=bar["timestamp"],
+                            open=bar["open"],
+                            high=bar["high"],
+                            low=bar["low"],
+                            close=bar["close"],
+                            volume=bar["volume"],
+                            vwap=bar.get("vwap"),
+                        )
+                        db.add(db_bar)
+                        day_synced += 1
+                
+                db.commit()
+                total_synced += day_synced
+                days_processed += 1
+                print(f"✓ {day_synced} bars")
+                
+            except Exception as e:
+                print(f"✗ Error: {e}")
+                days_failed += 1
+            
+            # Rate limit
+            if i < len(trading_days) - 1:
+                await asyncio.sleep(12)
+        
+        # Compute ATR and avg_volume for all symbols with enough data
+        print(f"\nComputing metrics for {len(symbols_seen)} symbols...")
+        updated_count = 0
+        
+        for symbol in symbols_seen:
+            bars = db.query(DailyBar).filter(
+                DailyBar.symbol == symbol
+            ).order_by(DailyBar.date.asc()).all()
+            
+            if len(bars) >= 14:
+                bar_dicts = [
+                    {"timestamp": b.date, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
+                    for b in bars
+                ]
+                
+                atr_14 = compute_atr(bar_dicts, 14)
+                avg_vol_14 = compute_avg_volume(bar_dicts, 14)
+                
+                if bars:
+                    bars[-1].atr_14 = atr_14
+                    bars[-1].avg_volume_14 = avg_vol_14
+                    updated_count += 1
+        
+        db.commit()
+        print(f"  ✓ Metrics updated for {updated_count} symbols")
+        
+        return {
+            "status": "success",
+            "days_processed": days_processed,
+            "days_failed": days_failed,
+            "bars_synced": total_synced,
+            "unique_symbols": len(symbols_seen),
+            "metrics_updated": updated_count,
         }
     
     except Exception as e:

@@ -88,3 +88,29 @@ async def get_scheduler_status():
         "status": "running" if jobs else "no_jobs",
         "jobs": jobs,
     }
+
+
+@router.post("/scheduler/trigger-sync")
+async def trigger_data_sync():
+    """
+    Manually trigger the nightly data sync.
+    
+    Useful for:
+    - Initial setup (first time running the system)
+    - Catching up after downtime
+    - Testing the sync process
+    """
+    from services.scheduler import job_nightly_data_sync
+    
+    try:
+        result = await job_nightly_data_sync()
+        return {
+            "status": "success",
+            "message": "Data sync triggered successfully",
+            "result": result,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Data sync failed: {str(e)}",
+        }

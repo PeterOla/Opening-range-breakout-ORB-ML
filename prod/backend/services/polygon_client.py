@@ -159,35 +159,61 @@ class PolygonClient:
     
     async def get_stock_tickers(
         self,
-        min_price: float = 5.0,
-        max_price: float = 500.0,
-        market: str = "stocks",
         active: bool = True,
+        ticker_type: str = "CS",
+        exchanges: list[str] = None,
     ) -> list[dict]:
         """
-        Get list of stock tickers matching criteria.
+        Get all stock tickers from Polygon with pagination.
         
+        Args:
+            active: True for active, False for delisted
+            ticker_type: CS = Common Stock, ETF, etc.
+            exchanges: Filter by exchange codes (XNYS, XNAS)
+            
         Returns:
-            List of ticker info dicts
+            List of ticker info dicts with: ticker, name, primary_exchange, type, active, cik
         """
+        import asyncio
+        
+        if exchanges is None:
+            exchanges = ["XNYS", "XNAS"]  # NYSE and NASDAQ
+        
         url = f"{BASE_URL}/v3/reference/tickers"
         params = {
             "apiKey": self.api_key,
-            "market": market,
+            "market": "stocks",
+            "type": ticker_type,
             "active": str(active).lower(),
             "limit": 1000,
         }
         
         all_tickers = []
+        page = 1
         
         async with httpx.AsyncClient() as client:
             while True:
-                response = await client.get(url, params=params, timeout=30.0)
+                response = await client.get(url, params=params, timeout=60.0)
                 response.raise_for_status()
                 data = response.json()
                 
                 if data.get("results"):
-                    all_tickers.extend(data["results"])
+                    # Filter by exchange
+                    for ticker in data["results"]:
+                        exchange = ticker.get("primary_exchange")
+                        if exchange in exchanges:
+                            all_tickers.append({
+                                "ticker": ticker.get("ticker"),
+                                "name": ticker.get("name"),
+                                "primary_exchange": exchange,
+                                "type": ticker.get("type"),
+                                "active": active,
+                                "currency": ticker.get("currency_name", "USD"),
+                                "cik": ticker.get("cik"),
+                                "delisted_utc": ticker.get("delisted_utc"),
+                            })
+                
+                print(f"  Page {page}: fetched {len(data.get('results', []))} tickers, {len(all_tickers)} total NYSE/NASDAQ")
                 
                 # Check for next page
                 next_url = data.get("next_url")
@@ -196,8 +222,37 @@ class PolygonClient:
                 
                 url = next_url
                 params = {"apiKey": self.api_key}
+                page += 1
+                
+                # Rate limiting: be gentle
+                await asyncio.sleep(0.5)
         
         return all_tickers
+    
+    async def get_all_us_stocks(self) -> list[dict]:
+        """
+        Get all US stocks (NYSE + NASDAQ), both active and delisted.
+        For survivorship-bias-free data.
+        
+        Returns:
+            Combined list of active and delisted tickers
+        """
+        print("Fetching ACTIVE stocks...")
+        active = await self.get_stock_tickers(active=True)
+        print(f"  ✓ {len(active)} active tickers")
+        
+        print("Fetching DELISTED stocks...")
+        delisted = await self.get_stock_tickers(active=False)
+        print(f"  ✓ {len(delisted)} delisted tickers")
+        
+        # Combine and dedupe by ticker symbol
+        combined = {t["ticker"]: t for t in active}
+        for t in delisted:
+            if t["ticker"] not in combined:
+                combined[t["ticker"]] = t
+        
+        print(f"  ✓ Total unique: {len(combined)} tickers")
+        return list(combined.values())
 
 
 # Singleton instance

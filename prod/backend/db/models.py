@@ -131,6 +131,30 @@ class DailyBar(Base):
     )
 
 
+class Ticker(Base):
+    """
+    Stock universe from Polygon.
+    Includes active and delisted tickers for survivorship-bias-free data.
+    """
+    __tablename__ = "tickers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), nullable=False, unique=True, index=True)
+    name = Column(String(255), nullable=True)
+    primary_exchange = Column(String(10), nullable=True)  # XNYS, XNAS
+    type = Column(String(10), nullable=True)  # CS = Common Stock
+    active = Column(Boolean, default=True, index=True)
+    currency = Column(String(10), default="USD")
+    cik = Column(String(20), nullable=True)
+    delisted_utc = Column(DateTime, nullable=True)
+    last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Pre-filter flags (updated during daily bar sync)
+    meets_price_filter = Column(Boolean, default=False)  # price >= $5
+    meets_volume_filter = Column(Boolean, default=False)  # avg_vol >= 1M
+    meets_atr_filter = Column(Boolean, default=False)  # ATR >= $0.50
+
+
 class OpeningRange(Base):
     """
     Opening range data (first 5-min bar) captured each trading day.
