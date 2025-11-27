@@ -9,7 +9,7 @@ export function KillSwitch() {
   
   // Fetch initial state
   useEffect(() => {
-    fetch('/api/kill-switch')
+    fetch('/api/system/kill-switch')
       .then(res => res.json())
       .then(data => setEnabled(data.enabled))
       .catch(console.error)
@@ -18,7 +18,7 @@ export function KillSwitch() {
   const toggle = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`/api/kill-switch?enable=${!enabled}`, {
+      const res = await fetch(`/api/system/kill-switch?enable=${!enabled}`, {
         method: 'POST'
       })
       const data = await res.json()

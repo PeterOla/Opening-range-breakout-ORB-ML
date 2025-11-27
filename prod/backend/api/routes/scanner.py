@@ -180,17 +180,39 @@ async def sync_daily_data(
     - Computes ATR(14) and avg_volume(14) for each symbol
     - Takes ~5 minutes for 14 days
     
+    Runs as background task - returns immediately.
+    Check /scanner/health to monitor progress.
+    
     Use cases:
     - Initial setup: Run with lookback_days=14
     - Daily refresh: Run with lookback_days=3 (catches up weekends)
     """
-    result = await sync_daily_bars_fast(lookback_days=lookback_days)
+    import asyncio
     
-    # Update filter flags after sync
-    if result.get("status") == "success":
-        await update_ticker_filters()
+    # Fire and forget - run sync in background
+    asyncio.create_task(_run_daily_sync(lookback_days))
     
-    return result
+    return {
+        "status": "started",
+        "message": f"Daily bars sync started in background ({lookback_days} days). Check /scanner/health to monitor progress.",
+        "lookback_days": lookback_days,
+    }
+
+
+async def _run_daily_sync(lookback_days: int):
+    """Background task for daily bars sync."""
+    try:
+        result = await sync_daily_bars_fast(lookback_days=lookback_days)
+        print(f"✓ Daily bars sync completed: {result}")
+        
+        # Update filter flags after sync
+        if result.get("status") == "success":
+            await update_ticker_filters()
+            print("✓ Ticker filters updated")
+    except Exception as e:
+        print(f"✗ Daily bars sync failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @router.get("/tickers")
@@ -335,6 +357,78 @@ async def cleanup_orphan_bars():
         }
     except Exception as e:
         db.rollback()
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
+
+@router.delete("/cleanup-duplicates")
+async def cleanup_duplicate_bars():
+    """
+    Delete duplicate daily bars (same symbol + date).
+    Keeps the bar with the highest ID (most recent insert).
+    """
+    from db.database import SessionLocal
+    from db.models import DailyBar
+    from sqlalchemy import func, and_
+    
+    db = SessionLocal()
+    try:
+        # Find duplicates: group by symbol + date, count > 1
+        print("🔍 Scanning for duplicate bars...")
+        duplicates = db.query(
+            DailyBar.symbol,
+            DailyBar.date,
+            func.count(DailyBar.id).label('count'),
+            func.max(DailyBar.id).label('keep_id')
+        ).group_by(
+            DailyBar.symbol, DailyBar.date
+        ).having(
+            func.count(DailyBar.id) > 1
+        ).all()
+        
+        if not duplicates:
+            print("✓ No duplicates found")
+            return {
+                "status": "success",
+                "message": "No duplicates found",
+                "duplicates_deleted": 0,
+            }
+        
+        print(f"Found {len(duplicates)} symbol+date combinations with duplicates")
+        
+        total_deleted = 0
+        batch_size = 500
+        
+        for i, dup in enumerate(duplicates):
+            # Delete all bars for this symbol+date except the one with highest ID
+            deleted = db.query(DailyBar).filter(
+                and_(
+                    DailyBar.symbol == dup.symbol,
+                    DailyBar.date == dup.date,
+                    DailyBar.id != dup.keep_id
+                )
+            ).delete(synchronize_session=False)
+            total_deleted += deleted
+            
+            # Progress log every batch_size items
+            if (i + 1) % batch_size == 0:
+                db.commit()  # Commit in batches for large datasets
+                print(f"  [{i + 1}/{len(duplicates)}] Deleted {total_deleted} duplicates so far...")
+        
+        db.commit()
+        
+        print(f"✓ Deleted {total_deleted} duplicate bars from {len(duplicates)} combinations")
+        
+        return {
+            "status": "success",
+            "duplicate_combinations": len(duplicates),
+            "duplicates_deleted": total_deleted,
+        }
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "error": str(e)}
     finally:
         db.close()
@@ -513,6 +607,8 @@ async def scanner_health():
         daily_bar_count = db.query(func.count(DailyBar.id)).scalar()
         symbol_count = db.query(func.count(func.distinct(DailyBar.symbol))).scalar()
         latest_bar = db.query(func.max(DailyBar.date)).scalar()
+        oldest_bar = db.query(func.min(DailyBar.date)).scalar()
+        trading_days = db.query(func.count(func.distinct(DailyBar.date))).scalar()
         
         today = datetime.now(ET).date()
         todays_or_count = db.query(func.count(OpeningRange.id)).filter(
@@ -526,7 +622,10 @@ async def scanner_health():
             "database": {
                 "daily_bars_count": daily_bar_count,
                 "symbols_count": symbol_count,
+                "oldest_bar_date": str(oldest_bar) if oldest_bar else None,
                 "latest_bar_date": str(latest_bar) if latest_bar else None,
+                "trading_days": trading_days,
+                "avg_bars_per_symbol": round(daily_bar_count / symbol_count, 1) if symbol_count else 0,
                 "todays_or_count": todays_or_count,
             },
         }

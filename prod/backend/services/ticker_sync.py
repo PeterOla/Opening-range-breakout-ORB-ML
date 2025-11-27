@@ -21,6 +21,10 @@ async def sync_tickers_from_polygon(
     Sync active stock tickers from Polygon to database.
     Uses official massive/polygon library with proper pagination.
     
+    - Inserts new tickers
+    - Updates existing tickers
+    - Marks tickers as INACTIVE if they're no longer in Polygon's active list
+    
     Expected result: ~5,000-6,000 active NYSE/NASDAQ common stocks.
     
     Args:
@@ -45,7 +49,35 @@ async def sync_tickers_from_polygon(
             return {"status": "error", "error": "No tickers fetched"}
         
         print(f"✓ Fetched {len(tickers)} active tickers from Polygon")
-        print("Starting database insert...")
+        
+        # Build set of active symbols from Polygon
+        active_symbols_from_polygon = {t.get("ticker") for t in tickers if t.get("ticker")}
+        
+        # Get current active symbols from database
+        current_active_in_db = {
+            row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()
+        }
+        
+        # Find symbols to deactivate (in DB but not in Polygon's active list)
+        symbols_to_deactivate = current_active_in_db - active_symbols_from_polygon
+        
+        print(f"  Current active in DB: {len(current_active_in_db)}")
+        print(f"  Active from Polygon: {len(active_symbols_from_polygon)}")
+        print(f"  To deactivate: {len(symbols_to_deactivate)}")
+        
+        # Deactivate tickers no longer active
+        deactivated = 0
+        if symbols_to_deactivate:
+            deactivated = db.query(Ticker).filter(
+                Ticker.symbol.in_(symbols_to_deactivate)
+            ).update(
+                {Ticker.active: False, Ticker.last_updated: datetime.utcnow()},
+                synchronize_session=False
+            )
+            db.commit()
+            print(f"  ✓ Deactivated {deactivated} tickers")
+        
+        print("Starting database insert/update...")
         
         # Stats
         inserted = 0
@@ -66,7 +98,7 @@ async def sync_tickers_from_polygon(
                     existing.name = t.get("name")
                     existing.primary_exchange = t.get("primary_exchange")
                     existing.type = t.get("type")
-                    existing.active = True  # Always true for active sync
+                    existing.active = True  # Re-activate if it was inactive
                     existing.currency = t.get("currency", "USD")
                     existing.cik = t.get("cik")
                     existing.last_updated = datetime.utcnow()
@@ -98,13 +130,14 @@ async def sync_tickers_from_polygon(
         
         # Final commit
         db.commit()
-        print(f"✓ Database sync complete: {inserted} inserted, {updated} updated, {errors} errors")
+        print(f"✓ Database sync complete: {inserted} inserted, {updated} updated, {deactivated} deactivated, {errors} errors")
         
         return {
             "status": "success",
             "total_fetched": len(tickers),
             "inserted": inserted,
             "updated": updated,
+            "deactivated": deactivated,
             "errors": errors,
         }
     
@@ -216,6 +249,9 @@ def get_ticker_stats(db: Optional[Session] = None) -> dict:
             Ticker.meets_atr_filter == True,
         ).scalar()
         
+        # Get last updated timestamp
+        last_updated = db.query(func.max(Ticker.last_updated)).scalar()
+        
         return {
             "total": total or 0,
             "active": active or 0,
@@ -223,6 +259,7 @@ def get_ticker_stats(db: Optional[Session] = None) -> dict:
             "nyse": nyse or 0,
             "nasdaq": nasdaq or 0,
             "meets_all_filters": meets_all or 0,
+            "last_updated": last_updated.isoformat() if last_updated else None,
         }
     
     finally:

@@ -13,6 +13,7 @@ interface TickerStats {
   nyse: number
   nasdaq: number
   meets_all_filters: number
+  last_updated: string | null
 }
 
 interface HealthData {
@@ -41,11 +42,23 @@ export function UniverseStats() {
   const stats = statsData?.stats
   const health = healthData
   
+  // Format last updated
+  const formatLastUpdated = (dateStr: string | null | undefined) => {
+    if (!dateStr) return 'Never'
+    const date = new Date(dateStr)
+    return date.toLocaleDateString('en-GB', { 
+      day: '2-digit', 
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+  
   const cards = [
     {
-      title: 'Total Tickers',
-      value: stats?.total?.toLocaleString() ?? '—',
-      subtitle: `${stats?.active?.toLocaleString() ?? '0'} active`,
+      title: 'Active Tickers',
+      value: stats?.active?.toLocaleString() ?? '—',
+      subtitle: `Total: ${stats?.total?.toLocaleString() ?? '0'} · Updated: ${formatLastUpdated(stats?.last_updated)}`,
       icon: Database,
       colour: 'text-blue-500',
       href: '/tickers',
@@ -58,7 +71,7 @@ export function UniverseStats() {
         : 'No data',
       icon: Activity,
       colour: 'text-green-500',
-      href: '/tickers',
+      href: '/daily-bars',
     },
     {
       title: 'Symbols with Data',
@@ -66,7 +79,7 @@ export function UniverseStats() {
       subtitle: 'With daily bars',
       icon: TrendingUp,
       colour: 'text-purple-500',
-      href: '/tickers',
+      href: '/daily-bars',
     },
     {
       title: 'Pass All Filters',

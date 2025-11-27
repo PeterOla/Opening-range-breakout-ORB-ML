@@ -10,13 +10,15 @@ import {
   FileText,
   Activity,
   Radar,
-  Database
+  Database,
+  BarChart3
 } from 'lucide-react'
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/scanner', label: 'Scanner', icon: Radar },
   { href: '/tickers', label: 'Tickers', icon: Database },
+  { href: '/daily-bars', label: 'Daily Bars', icon: BarChart3 },
   { href: '/signals', label: 'Signals', icon: Signal },
   { href: '/history', label: 'History', icon: History },
   { href: '/logs', label: 'Logs', icon: FileText },

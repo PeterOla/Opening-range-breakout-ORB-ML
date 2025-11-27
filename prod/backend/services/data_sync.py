@@ -281,7 +281,7 @@ async def sync_daily_bars_fast(lookback_days: int = 14) -> dict:
     This is the most efficient approach for syncing the entire universe:
     - 1 API call per day (not 1 per symbol)
     - For 14 days = ~20 API calls total
-    - Stores all NYSE/NASDAQ stocks automatically
+    - Only stores bars for active tickers in database
     
     Use this for the nightly sync job.
     
@@ -292,6 +292,16 @@ async def sync_daily_bars_fast(lookback_days: int = 14) -> dict:
     client = get_polygon_client()
     
     try:
+        # Get active ticker symbols for filtering
+        active_symbols = set(
+            row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()
+        )
+        
+        if not active_symbols:
+            return {"status": "error", "error": "No active tickers. Run ticker sync first."}
+        
+        print(f"Syncing bars for {len(active_symbols)} active tickers...")
+        
         end_date = datetime.now(ET).date()
         start_date = end_date - timedelta(days=lookback_days + 7)  # Buffer for weekends/holidays
         
@@ -319,10 +329,10 @@ async def sync_daily_bars_fast(lookback_days: int = 14) -> dict:
                 
                 day_synced = 0
                 
-                # Insert all bars (no symbol filter - get everything)
+                # Only insert bars for active tickers
                 for symbol, bar in grouped.items():
-                    # Skip non-standard tickers (warrants, units, etc.)
-                    if len(symbol) > 5 or any(c in symbol for c in ['.', '/']):
+                    # Skip if not in our active universe
+                    if symbol not in active_symbols:
                         continue
                     
                     symbols_seen.add(symbol)
@@ -337,18 +347,22 @@ async def sync_daily_bars_fast(lookback_days: int = 14) -> dict:
                     ).first()
                     
                     if not existing:
-                        db_bar = DailyBar(
-                            symbol=symbol,
-                            date=bar["timestamp"],
-                            open=bar["open"],
-                            high=bar["high"],
-                            low=bar["low"],
-                            close=bar["close"],
-                            volume=bar["volume"],
-                            vwap=bar.get("vwap"),
-                        )
-                        db.add(db_bar)
-                        day_synced += 1
+                        try:
+                            db_bar = DailyBar(
+                                symbol=symbol,
+                                date=bar["timestamp"],
+                                open=bar["open"],
+                                high=bar["high"],
+                                low=bar["low"],
+                                close=bar["close"],
+                                volume=bar["volume"],
+                                vwap=bar.get("vwap"),
+                            )
+                            db.add(db_bar)
+                            db.flush()  # Catch unique constraint violations early
+                            day_synced += 1
+                        except Exception:
+                            db.rollback()  # Skip duplicates silently
                 
                 db.commit()
                 total_synced += day_synced

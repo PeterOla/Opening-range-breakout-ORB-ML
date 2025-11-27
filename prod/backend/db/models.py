@@ -2,7 +2,7 @@
 SQLAlchemy database models.
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.sql import func
 import enum
 
@@ -201,8 +201,7 @@ class DailyBar(Base):
     avg_volume_14 = Column(Float, nullable=True)
     
     __table_args__ = (
-        # Unique constraint on symbol + date
-        {"sqlite_autoincrement": True},
+        UniqueConstraint('symbol', 'date', name='uix_dailybar_symbol_date'),
     )
 
 
