@@ -12,7 +12,8 @@ psycopg2-binary>=2.9.9  # PostgreSQL driver
 # Alpaca Trading
 alpaca-py>=0.21.0
 
-# Polygon Data
+# Polygon/Massive Data
+massive>=2.0.0
 httpx>=0.25.0
 
 # Data Processing

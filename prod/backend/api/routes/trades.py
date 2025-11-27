@@ -32,7 +32,7 @@ async def get_trades(
         query = query.filter(Trade.ticker == ticker)
     
     # Order by most recent first
-    query = query.order_by(desc(Trade.timestamp))
+    query = query.order_by(desc(Trade.trade_date))
     
     # Pagination
     trades = query.offset(offset).limit(limit).all()
@@ -40,7 +40,7 @@ async def get_trades(
     return [
         TradeResponse(
             id=t.id,
-            timestamp=t.timestamp,
+            timestamp=t.trade_date,
             ticker=t.ticker,
             side=t.side.value,
             entry_price=t.entry_price,
@@ -60,13 +60,13 @@ async def get_today_trades(db: Session = Depends(get_db)):
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     
     trades = db.query(Trade).filter(
-        Trade.timestamp >= today_start
-    ).order_by(desc(Trade.timestamp)).all()
+        Trade.trade_date >= today_start
+    ).order_by(desc(Trade.trade_date)).all()
     
     return [
         TradeResponse(
             id=t.id,
-            timestamp=t.timestamp,
+            timestamp=t.trade_date,
             ticker=t.ticker,
             side=t.side.value,
             entry_price=t.entry_price,

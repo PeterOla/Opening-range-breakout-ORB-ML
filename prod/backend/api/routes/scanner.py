@@ -62,11 +62,6 @@ class DataSyncRequest(BaseModel):
     lookback_days: int = 30
 
 
-class TickerSyncRequest(BaseModel):
-    """Request body for ticker sync."""
-    include_delisted: bool = False
-
-
 # ============ Scanner Endpoints ============
 
 @router.get("/run")
@@ -137,18 +132,37 @@ async def get_today_candidates(
 # ============ Data Sync Endpoints ============
 
 @router.post("/sync-tickers")
-async def sync_tickers(request: TickerSyncRequest = None):
+async def sync_tickers():
     """
-    Sync stock ticker universe from Polygon.
+    Sync active stock ticker universe from Polygon/Massive.
     
-    Fetches all NYSE/NASDAQ common stocks and stores in database.
+    Fetches all active NYSE/NASDAQ common stocks and stores in database.
     Run this once to populate the universe, then periodically to update.
     
-    Takes ~2-5 minutes depending on API rate limits.
+    Runs as background task - returns immediately.
+    Check /scanner/ticker-stats to monitor progress.
+    Expected result: ~5,000-6,000 active common stocks.
     """
-    include_delisted = request.include_delisted if request else False
-    result = await sync_tickers_from_polygon(include_delisted=include_delisted)
-    return result
+    import asyncio
+    
+    # Fire and forget - run sync in background
+    asyncio.create_task(_run_ticker_sync())
+    
+    return {
+        "status": "started",
+        "message": "Ticker sync started in background. Check /scanner/ticker-stats to monitor progress.",
+    }
+
+
+async def _run_ticker_sync():
+    """Background task for ticker sync."""
+    try:
+        result = await sync_tickers_from_polygon()
+        print(f"✓ Ticker sync completed: {result}")
+    except Exception as e:
+        print(f"✗ Ticker sync failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @router.post("/sync-daily")
@@ -282,6 +296,207 @@ async def cleanup_old_data(
         "status": "success",
         "rows_deleted": deleted,
     }
+
+
+@router.delete("/cleanup-orphans")
+async def cleanup_orphan_bars():
+    """
+    Delete daily bars for symbols not in active ticker list.
+    Use after re-syncing tickers to remove stale data.
+    """
+    from db.database import SessionLocal
+    from db.models import DailyBar, Ticker
+    from sqlalchemy import func
+    
+    db = SessionLocal()
+    try:
+        # Get active ticker symbols
+        active_symbols = [row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()]
+        
+        if not active_symbols:
+            return {"status": "error", "error": "No active tickers found"}
+        
+        # Count orphans before delete
+        orphan_count = db.query(func.count(DailyBar.id)).filter(
+            ~DailyBar.symbol.in_(active_symbols)
+        ).scalar()
+        
+        # Delete bars for symbols not in active list
+        deleted = db.query(DailyBar).filter(
+            ~DailyBar.symbol.in_(active_symbols)
+        ).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "orphan_bars_deleted": deleted,
+            "active_tickers": len(active_symbols),
+        }
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
+
+# ============ Ticker Data Endpoints ============
+
+@router.get("/tickers/list")
+async def list_all_tickers(
+    page: int = Query(1, ge=1, description="Page number"),
+    per_page: int = Query(50, ge=10, le=200, description="Items per page"),
+    search: str = Query(None, description="Search by symbol or name"),
+    exchange: str = Query(None, description="Filter by exchange (XNYS, XNAS)"),
+    sort_by: str = Query("symbol", description="Sort field"),
+    sort_order: str = Query("asc", description="Sort order (asc/desc)"),
+):
+    """
+    Get paginated list of all tickers with details.
+    """
+    from db.database import SessionLocal
+    from db.models import Ticker, DailyBar
+    from sqlalchemy import func, desc, asc, and_
+    
+    db = SessionLocal()
+    try:
+        # Base query
+        query = db.query(Ticker).filter(Ticker.active == True)
+        
+        # Apply search filter
+        if search:
+            search_term = f"%{search.upper()}%"
+            query = query.filter(
+                (Ticker.symbol.ilike(search_term)) | 
+                (Ticker.name.ilike(f"%{search}%"))
+            )
+        
+        # Apply exchange filter
+        if exchange:
+            query = query.filter(Ticker.primary_exchange == exchange)
+        
+        # Get total count
+        total = query.count()
+        
+        # Apply sorting
+        sort_col = getattr(Ticker, sort_by, Ticker.symbol)
+        if sort_order == "desc":
+            query = query.order_by(desc(sort_col))
+        else:
+            query = query.order_by(asc(sort_col))
+        
+        # Apply pagination
+        offset = (page - 1) * per_page
+        tickers = query.offset(offset).limit(per_page).all()
+        
+        # Get latest bar data for these tickers
+        symbols = [t.symbol for t in tickers]
+        
+        # Subquery for latest bar per symbol
+        subq = db.query(
+            DailyBar.symbol,
+            func.max(DailyBar.date).label("max_date")
+        ).filter(DailyBar.symbol.in_(symbols)).group_by(DailyBar.symbol).subquery()
+        
+        latest_bars = db.query(DailyBar).join(
+            subq,
+            and_(
+                DailyBar.symbol == subq.c.symbol,
+                DailyBar.date == subq.c.max_date,
+            )
+        ).all()
+        
+        bar_lookup = {b.symbol: b for b in latest_bars}
+        
+        # Build response
+        results = []
+        for t in tickers:
+            bar = bar_lookup.get(t.symbol)
+            results.append({
+                "symbol": t.symbol,
+                "name": t.name,
+                "exchange": t.primary_exchange,
+                "type": t.type,
+                "price": bar.close if bar else None,
+                "atr_14": bar.atr_14 if bar else None,
+                "avg_volume_14": bar.avg_volume_14 if bar else None,
+                "latest_date": str(bar.date) if bar else None,
+                "meets_filters": t.meets_price_filter and t.meets_volume_filter and t.meets_atr_filter,
+            })
+        
+        return {
+            "status": "success",
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": (total + per_page - 1) // per_page,
+            "tickers": results,
+        }
+    finally:
+        db.close()
+
+
+@router.get("/tickers/{symbol}")
+async def get_ticker_detail(symbol: str):
+    """
+    Get full details for a single ticker including price history.
+    """
+    from db.database import SessionLocal
+    from db.models import Ticker, DailyBar
+    from sqlalchemy import desc
+    
+    db = SessionLocal()
+    try:
+        # Get ticker info
+        ticker = db.query(Ticker).filter(Ticker.symbol == symbol.upper()).first()
+        if not ticker:
+            return {"status": "error", "error": f"Ticker {symbol} not found"}
+        
+        # Get price history (last 30 days)
+        bars = db.query(DailyBar).filter(
+            DailyBar.symbol == symbol.upper()
+        ).order_by(desc(DailyBar.date)).limit(30).all()
+        
+        # Reverse to chronological order
+        bars = list(reversed(bars))
+        
+        # Latest bar for current metrics
+        latest = bars[-1] if bars else None
+        
+        return {
+            "status": "success",
+            "ticker": {
+                "symbol": ticker.symbol,
+                "name": ticker.name,
+                "exchange": ticker.primary_exchange,
+                "type": ticker.type,
+                "active": ticker.active,
+                "cik": ticker.cik,
+                "currency": ticker.currency,
+            },
+            "metrics": {
+                "price": latest.close if latest else None,
+                "atr_14": latest.atr_14 if latest else None,
+                "avg_volume_14": latest.avg_volume_14 if latest else None,
+                "latest_date": str(latest.date) if latest else None,
+                "meets_price_filter": ticker.meets_price_filter,
+                "meets_volume_filter": ticker.meets_volume_filter,
+                "meets_atr_filter": ticker.meets_atr_filter,
+            },
+            "price_history": [
+                {
+                    "date": str(b.date),
+                    "open": b.open,
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "volume": b.volume,
+                }
+                for b in bars
+            ],
+        }
+    finally:
+        db.close()
 
 
 # ============ Health Check ============

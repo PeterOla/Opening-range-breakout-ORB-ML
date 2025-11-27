@@ -9,12 +9,14 @@ import {
   History, 
   FileText,
   Activity,
-  Radar
+  Radar,
+  Database
 } from 'lucide-react'
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/scanner', label: 'Scanner', icon: Radar },
+  { href: '/tickers', label: 'Tickers', icon: Database },
   { href: '/signals', label: 'Signals', icon: Signal },
   { href: '/history', label: 'History', icon: History },
   { href: '/logs', label: 'Logs', icon: FileText },

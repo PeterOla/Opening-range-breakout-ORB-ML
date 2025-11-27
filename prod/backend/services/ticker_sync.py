@@ -2,7 +2,7 @@
 Ticker universe synchronisation service.
 
 Fetches all NYSE/NASDAQ stocks from Polygon and stores in database.
-Includes both active and delisted tickers for survivorship-bias-free data.
+Active stocks only (no delisted) for production use.
 """
 from datetime import datetime
 from typing import Optional
@@ -15,14 +15,15 @@ from services.polygon_client import get_polygon_client
 
 
 async def sync_tickers_from_polygon(
-    include_delisted: bool = False,
     db: Optional[Session] = None,
 ) -> dict:
     """
-    Sync stock tickers from Polygon to database.
+    Sync active stock tickers from Polygon to database.
+    Uses official massive/polygon library with proper pagination.
+    
+    Expected result: ~5,000-6,000 active NYSE/NASDAQ common stocks.
     
     Args:
-        include_delisted: Whether to include delisted stocks
         db: Optional database session
         
     Returns:
@@ -36,84 +37,82 @@ async def sync_tickers_from_polygon(
     try:
         client = get_polygon_client()
         
-        if include_delisted:
-            tickers = await client.get_all_us_stocks()
-        else:
-            print("Fetching active US stocks...")
-            tickers = await client.get_stock_tickers(active=True)
+        # Use the sync method directly - works reliably
+        # The async wrapper can have issues with run_in_executor
+        tickers = client.get_active_stock_tickers_sync()
         
         if not tickers:
             return {"status": "error", "error": "No tickers fetched"}
         
+        print(f"✓ Fetched {len(tickers)} active tickers from Polygon")
+        print("Starting database insert...")
+        
         # Stats
         inserted = 0
         updated = 0
+        errors = 0
         
-        for t in tickers:
+        for i, t in enumerate(tickers):
             symbol = t.get("ticker")
             if not symbol:
                 continue
             
-            # Check if exists
-            existing = db.query(Ticker).filter(Ticker.symbol == symbol).first()
-            
-            if existing:
-                # Update
-                existing.name = t.get("name")
-                existing.primary_exchange = t.get("primary_exchange")
-                existing.type = t.get("type")
-                existing.active = t.get("active", True)
-                existing.currency = t.get("currency", "USD")
-                existing.cik = t.get("cik")
-                if t.get("delisted_utc"):
-                    try:
-                        existing.delisted_utc = datetime.fromisoformat(
-                            t["delisted_utc"].replace("Z", "+00:00")
-                        )
-                    except:
-                        pass
-                existing.last_updated = datetime.utcnow()
-                updated += 1
-            else:
-                # Insert
-                delisted_dt = None
-                if t.get("delisted_utc"):
-                    try:
-                        delisted_dt = datetime.fromisoformat(
-                            t["delisted_utc"].replace("Z", "+00:00")
-                        )
-                    except:
-                        pass
+            try:
+                # Check if exists
+                existing = db.query(Ticker).filter(Ticker.symbol == symbol).first()
                 
-                new_ticker = Ticker(
-                    symbol=symbol,
-                    name=t.get("name"),
-                    primary_exchange=t.get("primary_exchange"),
-                    type=t.get("type"),
-                    active=t.get("active", True),
-                    currency=t.get("currency", "USD"),
-                    cik=t.get("cik"),
-                    delisted_utc=delisted_dt,
-                )
-                db.add(new_ticker)
-                inserted += 1
-            
-            # Commit in batches
-            if (inserted + updated) % 500 == 0:
-                db.commit()
-                print(f"  Progress: {inserted} inserted, {updated} updated")
+                if existing:
+                    # Update
+                    existing.name = t.get("name")
+                    existing.primary_exchange = t.get("primary_exchange")
+                    existing.type = t.get("type")
+                    existing.active = True  # Always true for active sync
+                    existing.currency = t.get("currency", "USD")
+                    existing.cik = t.get("cik")
+                    existing.last_updated = datetime.utcnow()
+                    updated += 1
+                else:
+                    # Insert
+                    new_ticker = Ticker(
+                        symbol=symbol,
+                        name=t.get("name"),
+                        primary_exchange=t.get("primary_exchange"),
+                        type=t.get("type"),
+                        active=True,
+                        currency=t.get("currency", "USD"),
+                        cik=t.get("cik"),
+                    )
+                    db.add(new_ticker)
+                    inserted += 1
+                
+                # Commit in batches of 500
+                if (i + 1) % 500 == 0:
+                    db.commit()
+                    print(f"  Progress: {i + 1}/{len(tickers)} - {inserted} inserted, {updated} updated")
+                    
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    print(f"  Error on {symbol}: {e}")
+                db.rollback()
         
+        # Final commit
         db.commit()
+        print(f"✓ Database sync complete: {inserted} inserted, {updated} updated, {errors} errors")
         
         return {
             "status": "success",
             "total_fetched": len(tickers),
             "inserted": inserted,
             "updated": updated,
+            "errors": errors,
         }
     
     except Exception as e:
         db.rollback()
+        print(f"✗ Sync failed: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "error": str(e)}
     
     finally:

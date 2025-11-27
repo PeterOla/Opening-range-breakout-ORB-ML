@@ -1,6 +1,7 @@
 'use client'
 
 import useSWR from 'swr'
+import Link from 'next/link'
 import { Database, Activity, TrendingUp, Filter } from 'lucide-react'
 
 const fetcher = (url: string) => fetch(url).then(res => res.json())
@@ -47,6 +48,7 @@ export function UniverseStats() {
       subtitle: `${stats?.active?.toLocaleString() ?? '0'} active`,
       icon: Database,
       colour: 'text-blue-500',
+      href: '/tickers',
     },
     {
       title: 'Daily Bars',
@@ -56,6 +58,7 @@ export function UniverseStats() {
         : 'No data',
       icon: Activity,
       colour: 'text-green-500',
+      href: '/tickers',
     },
     {
       title: 'Symbols with Data',
@@ -63,6 +66,7 @@ export function UniverseStats() {
       subtitle: 'With daily bars',
       icon: TrendingUp,
       colour: 'text-purple-500',
+      href: '/tickers',
     },
     {
       title: 'Pass All Filters',
@@ -70,13 +74,18 @@ export function UniverseStats() {
       subtitle: 'Price ≥$5, Vol ≥1M, ATR ≥$0.50',
       icon: Filter,
       colour: 'text-orange-500',
+      href: '/tickers?filter=qualified',
     },
   ]
   
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
       {cards.map((card) => (
-        <div key={card.title} className="bg-card rounded-lg border border-border p-4">
+        <Link 
+          key={card.title} 
+          href={card.href}
+          className="bg-card rounded-lg border border-border p-4 hover:border-primary/50 hover:shadow-md transition-all cursor-pointer"
+        >
           <div className="flex items-center gap-3 mb-2">
             <card.icon className={`h-5 w-5 ${card.colour}`} />
             <span className="text-sm font-medium text-muted-foreground">
@@ -85,7 +94,7 @@ export function UniverseStats() {
           </div>
           <div className="text-2xl font-bold">{card.value}</div>
           <div className="text-xs text-muted-foreground mt-1">{card.subtitle}</div>
-        </div>
+        </Link>
       ))}
     </div>
   )
