@@ -38,7 +38,16 @@ export default function TickersPage() {
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [exchange, setExchange] = useState<string>('')
+  const [qualifiedOnly, setQualifiedOnly] = useState(false)
   const [perPage] = useState(50)
+  
+  // Check for filter param on mount
+  useEffect(() => {
+    const filter = searchParams.get('filter')
+    if (filter === 'qualified') {
+      setQualifiedOnly(true)
+    }
+  }, [searchParams])
   
   // Build query string
   const queryParams = new URLSearchParams()
@@ -46,6 +55,7 @@ export default function TickersPage() {
   queryParams.set('per_page', perPage.toString())
   if (search) queryParams.set('search', search)
   if (exchange) queryParams.set('exchange', exchange)
+  if (qualifiedOnly) queryParams.set('qualified', 'true')
   
   const { data, isLoading } = useSWR<TickerListResponse>(
     `/api/scanner/tickers/list?${queryParams.toString()}`,
@@ -60,14 +70,6 @@ export default function TickersPage() {
     }, 300)
     return () => clearTimeout(timer)
   }, [searchInput])
-  
-  // Check for filter param
-  useEffect(() => {
-    const filter = searchParams.get('filter')
-    if (filter === 'qualified') {
-      // Could add a qualified-only filter here
-    }
-  }, [searchParams])
   
   const formatVolume = (vol: number | null) => {
     if (!vol) return '—'
@@ -89,9 +91,12 @@ export default function TickersPage() {
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Ticker Universe</h1>
+            <h1 className="text-2xl font-bold">
+              {qualifiedOnly ? 'Qualified Tickers' : 'Ticker Universe'}
+            </h1>
             <p className="text-muted-foreground">
-              {data?.total?.toLocaleString() ?? '—'} active NYSE/NASDAQ stocks
+              {data?.total?.toLocaleString() ?? '—'} {qualifiedOnly ? 'qualified' : 'active'} NYSE/NASDAQ stocks
+              {qualifiedOnly && <span className="ml-2 text-xs">(Price ≥$5, Vol ≥1M, ATR ≥$0.50)</span>}
             </p>
           </div>
           
@@ -119,6 +124,18 @@ export default function TickersPage() {
               <option value="XNYS">NYSE</option>
               <option value="XNAS">NASDAQ</option>
             </select>
+            
+            {/* Qualified Filter Toggle */}
+            <button
+              onClick={() => { setQualifiedOnly(!qualifiedOnly); setPage(1) }}
+              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                qualifiedOnly 
+                  ? 'bg-orange-500/20 border-orange-500 text-orange-500' 
+                  : 'border-border bg-card text-muted-foreground hover:border-primary/50'
+              }`}
+            >
+              {qualifiedOnly ? '✓ Qualified Only' : 'Show All'}
+            </button>
           </div>
         </div>
         

@@ -3,17 +3,19 @@ EOD Scheduler for ORB Strategy.
 
 Automates:
 1. 6:00 PM ET - Nightly data sync (tickers + daily bars)
-2. 3:55 PM ET - Flatten all positions (EOD exit)
+2. Dynamic EOD flatten - 5 mins before market close (handles early close days)
 3. 9:25 AM ET - Pre-market health check
 4. 4:05 PM ET - Daily P&L logging
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from execution.order_executor import flatten_eod, get_executor
+from services.market_calendar import get_market_calendar, is_early_close_today
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -65,10 +67,17 @@ async def job_nightly_data_sync():
 
 async def job_flatten_eod():
     """
-    3:55 PM ET - Close all positions and cancel orders.
+    Dynamic EOD flatten - 5 mins before market close.
+    Handles early close days (e.g., Black Friday - 1 PM close).
     Critical for day trading - no overnight exposure.
     """
-    logger.info("🔔 EOD FLATTEN triggered at 3:55 PM ET")
+    calendar = get_market_calendar()
+    schedule = calendar.get_todays_schedule()
+    
+    logger.info(f"🔔 EOD FLATTEN triggered - Market closes at {schedule.get('close', '??')}")
+    
+    if schedule.get("early_close"):
+        logger.warning("⚠️ EARLY CLOSE DAY - Flattening positions before 1 PM close")
     
     try:
         result = flatten_eod()
@@ -77,6 +86,55 @@ async def job_flatten_eod():
     except Exception as e:
         logger.error(f"❌ EOD flatten failed: {e}")
         raise
+
+
+async def schedule_todays_eod_flatten():
+    """
+    Schedule today's EOD flatten based on market calendar.
+    Called at market open to set the correct flatten time.
+    
+    - Regular day: 3:55 PM ET
+    - Early close: 12:55 PM ET (or 5 mins before actual close)
+    """
+    calendar = get_market_calendar()
+    flatten_time = calendar.get_flatten_time()
+    
+    if flatten_time is None:
+        logger.info("📅 Not a trading day - no EOD flatten scheduled")
+        return
+    
+    today = datetime.now(ET).date()
+    flatten_dt = datetime.combine(today, flatten_time).replace(tzinfo=ET)
+    now = datetime.now(ET)
+    
+    # Check if already past flatten time
+    if now >= flatten_dt:
+        logger.warning(f"⚠️ Already past flatten time ({flatten_time}), executing now!")
+        await job_flatten_eod()
+        return
+    
+    schedule = calendar.get_todays_schedule()
+    close_time = schedule.get("close", "16:00")
+    is_early = schedule.get("early_close", False)
+    
+    logger.info(f"📅 Market closes at {close_time} {'(EARLY CLOSE)' if is_early else ''}")
+    logger.info(f"📅 Scheduling EOD flatten for {flatten_time}")
+    
+    # Remove existing dynamic job if present
+    existing_job = scheduler.get_job("dynamic_eod_flatten")
+    if existing_job:
+        scheduler.remove_job("dynamic_eod_flatten")
+    
+    # Schedule one-time job for today's flatten
+    scheduler.add_job(
+        job_flatten_eod,
+        DateTrigger(run_date=flatten_dt),
+        id="dynamic_eod_flatten",
+        name=f"EOD Flatten ({flatten_time.strftime('%H:%M')})",
+        replace_existing=True,
+    )
+    
+    logger.info(f"✅ EOD flatten scheduled for {flatten_dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
 
 async def job_premarket_check():
@@ -173,7 +231,24 @@ def start_scheduler():
     )
     logger.info("📅 Scheduled: Sunday data sync at 6:00 PM ET")
     
-    # Job 1: EOD Flatten at 3:55 PM ET (Mon-Fri)
+    # Job 1: Schedule dynamic EOD flatten at 9:30 AM (market open)
+    # This will check market calendar and schedule for correct time
+    # (3:55 PM regular days, 12:55 PM early close days)
+    scheduler.add_job(
+        schedule_todays_eod_flatten,
+        CronTrigger(
+            hour=9,
+            minute=30,
+            day_of_week="mon-fri",
+            timezone=ET,
+        ),
+        id="schedule_eod_flatten",
+        name="Schedule Dynamic EOD Flatten",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Dynamic EOD flatten setup at 9:30 AM ET (Mon-Fri)")
+    
+    # Job 1b: Fallback fixed EOD flatten at 3:55 PM (in case dynamic fails)
     scheduler.add_job(
         job_flatten_eod,
         CronTrigger(
@@ -182,11 +257,11 @@ def start_scheduler():
             day_of_week="mon-fri",
             timezone=ET,
         ),
-        id="eod_flatten",
-        name="EOD Position Flatten",
+        id="eod_flatten_fallback",
+        name="EOD Flatten Fallback (3:55 PM)",
         replace_existing=True,
     )
-    logger.info("📅 Scheduled: EOD flatten at 3:55 PM ET (Mon-Fri)")
+    logger.info("📅 Scheduled: EOD flatten fallback at 3:55 PM ET (Mon-Fri)")
     
     # Job 2: Pre-market check at 9:25 AM ET (Mon-Fri)
     scheduler.add_job(
@@ -203,7 +278,8 @@ def start_scheduler():
     )
     logger.info("📅 Scheduled: Pre-market check at 9:25 AM ET (Mon-Fri)")
     
-    # Job 3: Daily summary at 4:05 PM ET (Mon-Fri)
+    # Job 3: Daily summary - dynamic based on market close
+    # Will run 5 mins after actual market close
     scheduler.add_job(
         job_daily_summary,
         CronTrigger(
@@ -221,6 +297,29 @@ def start_scheduler():
     # Start the scheduler
     scheduler.start()
     logger.info("✅ Scheduler started successfully")
+    
+    # If starting during market hours, schedule today's EOD flatten now
+    import asyncio
+    asyncio.create_task(_schedule_eod_if_needed())
+
+
+async def _schedule_eod_if_needed():
+    """
+    Check if we're in market hours and schedule EOD flatten.
+    Called on startup to handle server restarts during trading hours.
+    """
+    from datetime import time
+    now = datetime.now(ET)
+    
+    # Only check on weekdays
+    if now.weekday() > 4:  # Saturday or Sunday
+        return
+    
+    # If after 9:30 AM and before market close, schedule EOD
+    market_open = time(9, 30)
+    if now.time() >= market_open:
+        logger.info("🔄 Server started during market hours - scheduling EOD flatten")
+        await schedule_todays_eod_flatten()
 
 
 def stop_scheduler():

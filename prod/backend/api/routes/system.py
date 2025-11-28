@@ -114,3 +114,81 @@ async def trigger_data_sync():
             "status": "error",
             "message": f"Data sync failed: {str(e)}",
         }
+
+
+@router.get("/market-calendar")
+async def get_market_calendar():
+    """
+    Get today's market schedule including early close detection.
+    
+    Returns:
+    - is_trading_day: Whether market is open today
+    - early_close: True if market closes early (e.g., Black Friday)
+    - open/close: Market hours
+    - flatten_time: When positions will be closed (5 mins before close)
+    """
+    from services.market_calendar import get_market_calendar
+    
+    calendar = get_market_calendar()
+    schedule = calendar.get_todays_schedule()
+    
+    return {
+        "status": "success",
+        "schedule": schedule,
+    }
+
+
+@router.post("/flatten-positions")
+async def flatten_all_positions():
+    """
+    Manually close all positions and cancel all orders.
+    
+    Use this for:
+    - Emergency position closure
+    - Early close days if automatic didn't trigger
+    - End of day manual flatten
+    """
+    from execution.order_executor import flatten_eod
+    
+    try:
+        result = flatten_eod()
+        return {
+            "status": "success",
+            "message": "All positions flattened",
+            "result": result,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to flatten: {str(e)}",
+        }
+
+
+@router.post("/scheduler/schedule-eod")
+async def schedule_eod_flatten():
+    """
+    Manually schedule today's EOD flatten based on market calendar.
+    
+    This will detect early close days and schedule appropriately:
+    - Regular days: 3:55 PM ET
+    - Early close: 12:55 PM ET (or 5 mins before actual close)
+    """
+    from services.scheduler import schedule_todays_eod_flatten
+    from services.market_calendar import get_market_calendar
+    
+    try:
+        await schedule_todays_eod_flatten()
+        
+        calendar = get_market_calendar()
+        schedule = calendar.get_todays_schedule()
+        
+        return {
+            "status": "success",
+            "message": "EOD flatten scheduled",
+            "schedule": schedule,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to schedule: {str(e)}",
+        }

@@ -26,8 +26,9 @@ class OrderStatus(str, enum.Enum):
 
 class PositionStatus(str, enum.Enum):
     """Position status enum."""
-    OPEN = "OPEN"
-    CLOSED = "CLOSED"
+    PENDING = "PENDING"  # Order placed, waiting for fill
+    OPEN = "OPEN"        # Order filled, position active
+    CLOSED = "CLOSED"    # Position exited
 
 
 class LogLevel(str, enum.Enum):
@@ -47,7 +48,7 @@ class Trade(Base):
     __tablename__ = "trades"
     
     id = Column(Integer, primary_key=True, index=True)
-    trade_date = Column(DateTime, nullable=False, index=True)  # Trading day
+    timestamp = Column(DateTime, nullable=False, index=True)  # Trading day/time
     ticker = Column(String(10), nullable=False, index=True)
     side = Column(SQLEnum(OrderSide), nullable=False)
     
@@ -66,7 +67,7 @@ class Trade(Base):
     pnl_percent = Column(Float, nullable=True)
     
     # Order management
-    status = Column(SQLEnum(PositionStatus), default=PositionStatus.OPEN, nullable=False)
+    status = Column(SQLEnum(PositionStatus), default=PositionStatus.PENDING, nullable=False)
     alpaca_order_id = Column(String(50), nullable=True, index=True)
     alpaca_exit_order_id = Column(String(50), nullable=True)
     
@@ -229,6 +230,59 @@ class Ticker(Base):
     meets_atr_filter = Column(Boolean, default=False)  # ATR >= $0.50
 
 
+class SimulatedTrade(Base):
+    """
+    Simulated/backtest trade records.
+    
+    Separate from Trade table to avoid confusion with live trades.
+    These are "what if" results from the historical scanner.
+    """
+    __tablename__ = "simulated_trades"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    trade_date = Column(DateTime, nullable=False, index=True)  # Trading day
+    ticker = Column(String(10), nullable=False, index=True)
+    side = Column(SQLEnum(OrderSide), nullable=False)
+    
+    # Ranking
+    rvol_rank = Column(Integer, nullable=False)  # 1-20
+    rvol = Column(Float, nullable=False)
+    
+    # Opening Range data
+    or_open = Column(Float, nullable=False)
+    or_high = Column(Float, nullable=False)
+    or_low = Column(Float, nullable=False)
+    or_close = Column(Float, nullable=False)
+    or_volume = Column(Float, nullable=False)
+    
+    # Entry/Exit
+    entry_price = Column(Float, nullable=False)  # OR high (long) or OR low (short)
+    stop_price = Column(Float, nullable=False)   # Entry ± 10% ATR
+    exit_price = Column(Float, nullable=True)    # Actual exit price
+    exit_reason = Column(String(20), nullable=True)  # STOPPED, EOD, NO_ENTRY
+    
+    # P&L (null if NO_ENTRY)
+    pnl_pct = Column(Float, nullable=True)
+    day_change_pct = Column(Float, nullable=True)  # Stock's % change that day
+    
+    # Position sizing (1% risk model)
+    stop_distance_pct = Column(Float, nullable=True)  # Stop distance as % of entry
+    leverage = Column(Float, nullable=True)           # Effective leverage from position sizing
+    dollar_pnl = Column(Float, nullable=True)         # Dollar P&L on $1000 capital @ 1% risk
+    
+    # Metrics at time of scan
+    atr_14 = Column(Float, nullable=True)
+    avg_volume_14 = Column(Float, nullable=True)
+    prev_close = Column(Float, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    
+    __table_args__ = (
+        UniqueConstraint('trade_date', 'ticker', name='uix_simtrade_date_ticker'),
+    )
+
+
 class OpeningRange(Base):
     """
     Opening range data (first 5-min bar) captured each trading day.
@@ -270,3 +324,30 @@ class OpeningRange(Base):
     __table_args__ = (
         {"sqlite_autoincrement": True},
     )
+
+
+class ScannerCache(Base):
+    """
+    Cache metadata for scanner results.
+    
+    Tracks which dates have been scanned to avoid re-fetching
+    data for holidays/no-trading days.
+    """
+    __tablename__ = "scanner_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    scan_date = Column(DateTime, nullable=False, unique=True, index=True)  # The date scanned
+    
+    # Result status
+    status = Column(String(50), nullable=False)  # 'success', 'no_data', 'holiday', 'error'
+    candidates_count = Column(Integer, default=0)  # Number of candidates found
+    trades_entered = Column(Integer, default=0)    # Number that triggered entry
+    
+    # Summary stats (for quick display without loading all trades)
+    total_pnl_pct = Column(Float, nullable=True)
+    winners = Column(Integer, default=0)
+    losers = Column(Integer, default=0)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

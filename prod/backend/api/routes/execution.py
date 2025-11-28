@@ -3,14 +3,135 @@ Execution API endpoints.
 Order management, positions, EOD flatten.
 """
 from fastapi import APIRouter
+from pydantic import BaseModel
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Optional
 
-from execution.order_executor import get_executor, flatten_eod
+from execution.order_executor import get_executor, flatten_eod, calculate_position_size
+from core.config import settings
 
 
 router = APIRouter(prefix="/execution", tags=["execution"])
 ET = ZoneInfo("America/New_York")
+
+
+class OrderRequest(BaseModel):
+    """Request body for placing an order."""
+    symbol: str
+    side: str  # "LONG" or "SHORT"
+    entry_price: float
+    stop_price: float
+
+
+class TestOrderRequest(BaseModel):
+    """Request for test order."""
+    symbol: str = "F"  # Ford - cheap liquid stock
+    entry_price: float = 11.00
+    stop_price: float = 10.90
+
+
+@router.post("/test-order")
+async def place_test_order(request: TestOrderRequest):
+    """
+    Place a test order on paper account.
+    
+    ⚠️ Only works on paper account!
+    Uses fixed 2x leverage position sizing.
+    """
+    if not settings.ALPACA_PAPER:
+        return {
+            "status": "rejected",
+            "reason": "Test orders only allowed on paper account",
+        }
+    
+    # Calculate position size
+    sizing = calculate_position_size(request.entry_price, request.stop_price)
+    
+    if sizing["shares"] < 1:
+        return {
+            "status": "rejected",
+            "reason": "Position size too small (0 shares)",
+            "sizing": sizing,
+        }
+    
+    executor = get_executor()
+    
+    result = executor.place_entry_order(
+        symbol=request.symbol.upper(),
+        side="LONG",
+        shares=sizing["shares"],
+        entry_price=request.entry_price,
+        stop_price=request.stop_price,
+    )
+    
+    return {
+        **result,
+        "sizing": sizing,
+        "settings": {
+            "capital": settings.TRADING_CAPITAL,
+            "leverage": settings.FIXED_LEVERAGE,
+            "risk_per_trade": settings.RISK_PER_TRADE_PCT,
+        },
+    }
+
+
+@router.post("/order")
+async def place_order(request: OrderRequest):
+    """
+    Place an order with automatic position sizing.
+    
+    Uses fixed 2x leverage from settings.
+    """
+    # Calculate position size
+    sizing = calculate_position_size(request.entry_price, request.stop_price)
+    
+    if sizing["shares"] < 1:
+        return {
+            "status": "rejected",
+            "reason": "Position size too small (0 shares)",
+            "sizing": sizing,
+        }
+    
+    executor = get_executor()
+    
+    result = executor.place_entry_order(
+        symbol=request.symbol.upper(),
+        side=request.side.upper(),
+        shares=sizing["shares"],
+        entry_price=request.entry_price,
+        stop_price=request.stop_price,
+    )
+    
+    return {
+        **result,
+        "sizing": sizing,
+    }
+
+
+@router.get("/sizing")
+async def get_position_sizing(
+    entry_price: float,
+    stop_price: float,
+):
+    """
+    Calculate position sizing for given entry/stop prices.
+    
+    Useful for previewing trade size before placing.
+    """
+    sizing = calculate_position_size(entry_price, stop_price)
+    
+    return {
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "sizing": sizing,
+        "settings": {
+            "capital": settings.TRADING_CAPITAL,
+            "leverage": settings.FIXED_LEVERAGE,
+            "risk_per_trade_pct": settings.RISK_PER_TRADE_PCT,
+            "risk_per_trade_dollars": settings.TRADING_CAPITAL * settings.RISK_PER_TRADE_PCT,
+        },
+    }
 
 
 @router.get("/orders")

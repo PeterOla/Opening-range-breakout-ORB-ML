@@ -295,3 +295,191 @@ async def get_todays_candidates(top_n: int = 20) -> list[dict]:
     
     finally:
         db.close()
+
+
+async def get_todays_candidates_with_live_pnl(top_n: int = 20) -> list[dict]:
+    """
+    Get today's candidates with live prices and unrealized P&L.
+    
+    For each candidate:
+    1. Fetch current price from Alpaca
+    2. Determine if entry would have been triggered (price crossed entry level)
+    3. Calculate unrealized P&L (or realized if stop was hit)
+    
+    Position sizing: $1000 capital, 1% risk, 2x max leverage
+    """
+    from alpaca.data.live import StockDataStream
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from core.config import settings
+    
+    db = SessionLocal()
+    today = datetime.now(ET).date()
+    
+    # Position sizing constants - Fixed 2x leverage
+    CAPITAL = 1000.0
+    
+    try:
+        # Get today's candidates
+        candidates = db.query(OpeningRange).filter(
+            and_(
+                OpeningRange.date == today,
+                OpeningRange.passed_filters == True,
+            )
+        ).order_by(OpeningRange.rank.asc()).limit(top_n).all()
+        
+        if not candidates:
+            return []
+        
+        # Get symbols
+        symbols = [c.symbol for c in candidates]
+        
+        # Fetch current prices from Alpaca
+        data_client = StockHistoricalDataClient(
+            api_key=settings.ALPACA_API_KEY,
+            secret_key=settings.ALPACA_SECRET_KEY,
+        )
+        
+        # Get latest quotes
+        try:
+            quotes_request = StockLatestQuoteRequest(symbol_or_symbols=symbols)
+            quotes = data_client.get_stock_latest_quote(quotes_request)
+        except Exception as e:
+            print(f"Failed to get quotes: {e}")
+            quotes = {}
+        
+        # Get today's bars to check for entry/stop triggers
+        now = datetime.now(ET)
+        start = datetime.combine(today, time(9, 35)).replace(tzinfo=ET)
+        
+        try:
+            bars_request = StockBarsRequest(
+                symbol_or_symbols=symbols,
+                timeframe=TimeFrame.Minute,
+                start=start,
+                end=now,
+            )
+            all_bars = data_client.get_stock_bars(bars_request)
+        except Exception as e:
+            print(f"Failed to get bars: {e}")
+            all_bars = {}
+        
+        results = []
+        
+        for c in candidates:
+            symbol = c.symbol
+            entry_price = c.entry_price
+            stop_price = c.stop_price
+            direction = c.direction
+            
+            # Get current price
+            current_price = None
+            if symbol in quotes:
+                q = quotes[symbol]
+                current_price = float(q.ask_price + q.bid_price) / 2 if q.ask_price and q.bid_price else None
+            
+            # Check entry/stop triggers from intraday bars
+            entered = False
+            stopped_out = False
+            entry_time = None
+            exit_time = None
+            exit_price = None
+            exit_reason = None
+            
+            if symbol in all_bars:
+                bars_df = all_bars[symbol].df if hasattr(all_bars[symbol], 'df') else pd.DataFrame(all_bars[symbol])
+                if not bars_df.empty:
+                    for idx, bar in bars_df.iterrows():
+                        if not entered:
+                            # Check for entry trigger
+                            if direction == 1:  # Long
+                                if bar['high'] >= entry_price:
+                                    entered = True
+                                    entry_time = idx.strftime("%H:%M") if hasattr(idx, 'strftime') else str(idx)
+                            else:  # Short
+                                if bar['low'] <= entry_price:
+                                    entered = True
+                                    entry_time = idx.strftime("%H:%M") if hasattr(idx, 'strftime') else str(idx)
+                        else:
+                            # Check for stop trigger
+                            if direction == 1:  # Long - stop is below
+                                if bar['low'] <= stop_price:
+                                    stopped_out = True
+                                    exit_price = stop_price
+                                    exit_time = idx.strftime("%H:%M") if hasattr(idx, 'strftime') else str(idx)
+                                    exit_reason = "STOP_LOSS"
+                                    break
+                            else:  # Short - stop is above
+                                if bar['high'] >= stop_price:
+                                    stopped_out = True
+                                    exit_price = stop_price
+                                    exit_time = idx.strftime("%H:%M") if hasattr(idx, 'strftime') else str(idx)
+                                    exit_reason = "STOP_LOSS"
+                                    break
+            
+            # Fixed 2x leverage position sizing
+            LEVERAGE = 2.0
+            position_value = CAPITAL * LEVERAGE  # $2000 position
+            shares = position_value / entry_price if entry_price > 0 else 0
+            leverage = LEVERAGE
+            
+            # Calculate P&L
+            pnl_pct = 0
+            dollar_pnl = 0
+            base_dollar_pnl = 0
+            
+            if entered:
+                if stopped_out:
+                    # Realized loss at stop
+                    if direction == 1:
+                        pnl_pct = (exit_price - entry_price) / entry_price * 100
+                    else:
+                        pnl_pct = (entry_price - exit_price) / entry_price * 100
+                    price_move = (exit_price - entry_price) * direction
+                    dollar_pnl = shares * price_move
+                    base_shares = CAPITAL / entry_price
+                    base_dollar_pnl = base_shares * price_move
+                elif current_price:
+                    # Unrealized P&L
+                    if direction == 1:
+                        pnl_pct = (current_price - entry_price) / entry_price * 100
+                    else:
+                        pnl_pct = (entry_price - current_price) / entry_price * 100
+                    price_move = (current_price - entry_price) * direction
+                    dollar_pnl = shares * price_move
+                    base_shares = CAPITAL / entry_price
+                    base_dollar_pnl = base_shares * price_move
+                    exit_reason = "LIVE"
+            
+            results.append({
+                "symbol": symbol,
+                "rank": c.rank,
+                "direction": direction,
+                "direction_label": "LONG" if direction == 1 else "SHORT",
+                "rvol": c.rvol,
+                "atr": c.atr,
+                "entry_price": entry_price,
+                "stop_price": stop_price,
+                "or_high": c.or_high,
+                "or_low": c.or_low,
+                "current_price": round(current_price, 2) if current_price else None,
+                "entered": entered,
+                "entry_time": entry_time,
+                "exit_price": round(exit_price, 2) if exit_price else (round(current_price, 2) if current_price and entered else None),
+                "exit_time": exit_time,
+                "exit_reason": exit_reason,
+                "pnl_pct": round(pnl_pct, 2),
+                "dollar_pnl": round(dollar_pnl, 2),
+                "base_dollar_pnl": round(base_dollar_pnl, 2),
+                "leverage": round(leverage, 2),
+                "is_winner": pnl_pct > 0 if entered else None,
+                # Live mode specific fields
+                "unrealized_pnl": round(dollar_pnl, 2) if not stopped_out and entered else None,
+                "unrealized_pnl_pct": round(pnl_pct, 2) if not stopped_out and entered else None,
+            })
+        
+        return results
+    
+    finally:
+        db.close()

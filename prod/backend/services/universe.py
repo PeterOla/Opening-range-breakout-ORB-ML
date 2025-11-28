@@ -9,7 +9,7 @@ import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 from alpaca.trading.requests import GetAssetsRequest
 from alpaca.trading.enums import AssetClass, AssetStatus
@@ -166,17 +166,46 @@ async def fetch_daily_bars(
 async def fetch_5min_bars(
     symbols: list[str],
     lookback_days: int = 1,
+    target_date: Optional[datetime] = None,
+    progress_callback: Optional[callable] = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Fetch 5-minute OHLCV bars for opening range calculation.
     Returns dict of symbol -> DataFrame with 5min bars.
+    
+    Args:
+        symbols: List of ticker symbols
+        lookback_days: Days to look back from target_date
+        target_date: The date to fetch bars for. If None, uses now().
+        progress_callback: Optional callback(fetched, total) for progress updates
+    
+    Note: Free Alpaca tier only allows SIP data with 15-minute delay.
+    Querying today's data will fail unless you have a paid subscription.
+    For historical backtesting, use dates at least 1 day in the past.
     """
     if not symbols:
         return {}
     
     client = get_data_client()
-    end_date = datetime.now()
+    
+    # Use target_date if provided, otherwise use now
+    if target_date is None:
+        end_date = datetime.now()
+    else:
+        # Add 1 day to include the full target date
+        end_date = target_date + timedelta(days=1)
+    
     start_date = end_date - timedelta(days=lookback_days + 1)
+    
+    # Check if we're querying recent data (within last 15 minutes)
+    # Free tier SIP has 15-min delay; recent data will fail
+    now = datetime.now(end_date.tzinfo) if end_date.tzinfo else datetime.now()
+    is_recent_data = end_date > now - timedelta(minutes=15)
+    
+    if is_recent_data:
+        print(f"[fetch_5min_bars] ⚠️ WARNING: Querying recent data - may fail on free tier")
+    
+    print(f"[fetch_5min_bars] Fetching {len(symbols)} symbols from {start_date} to {end_date}")
     
     batch_size = 50
     all_bars = {}
@@ -186,10 +215,10 @@ async def fetch_5min_bars(
         try:
             request = StockBarsRequest(
                 symbol_or_symbols=batch,
-                timeframe=TimeFrame(5, "Min"),
+                timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                 start=start_date,
                 end=end_date,
-                feed=DataFeed.IEX,
+                feed=DataFeed.SIP,  # SIP for full volume data (15-min delay on free tier)
             )
             bars = client.get_stock_bars(request)
             
@@ -209,9 +238,19 @@ async def fetch_5min_bars(
                     if not df.empty:
                         all_bars[sym] = df
         except Exception as e:
-            print(f"Error fetching 5min bars for batch: {e}")
+            print(f"Error fetching 5min bars for batch {i//batch_size + 1}: {e}")
             continue
+        
+        # Progress callback for SSE streaming
+        fetched_so_far = min(i + batch_size, len(symbols))
+        if progress_callback:
+            progress_callback(fetched_so_far, len(symbols))
+        
+        # Progress log every 10 batches
+        if (i // batch_size + 1) % 10 == 0:
+            print(f"   Fetched {fetched_so_far}/{len(symbols)} symbols...")
     
+    print(f"[fetch_5min_bars] Got bars for {len(all_bars)} symbols")
     return all_bars
 
 

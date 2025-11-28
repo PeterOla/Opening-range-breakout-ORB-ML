@@ -31,9 +31,14 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
     
     # Trading Parameters
-    MAX_OPEN_POSITIONS: int = 5
-    DAILY_LOSS_LIMIT_PCT: float = 0.05
-    POSITION_SIZE_PCT: float = 0.02
+    MAX_OPEN_POSITIONS: int = 20          # Top 20 candidates
+    DAILY_LOSS_LIMIT_PCT: float = 0.05    # 5% daily loss limit
+    POSITION_SIZE_PCT: float = 0.02       # Legacy - not used with new sizing
+    
+    # Position Sizing (Fixed Leverage)
+    TRADING_CAPITAL: float = 1000.0       # Capital allocated to strategy
+    FIXED_LEVERAGE: float = 2.0           # Fixed 2x leverage
+    RISK_PER_TRADE_PCT: float = 0.01      # 1% risk per trade = $10 on $1000
     
     # System
     KILL_SWITCH_FILE: str = ".stop_trading"

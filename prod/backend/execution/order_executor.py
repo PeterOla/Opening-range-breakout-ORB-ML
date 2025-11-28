@@ -38,6 +38,67 @@ from execution.alpaca_client import get_alpaca_client
 ET = ZoneInfo("America/New_York")
 
 
+def calculate_position_size(
+    entry_price: float,
+    stop_price: float,
+) -> dict:
+    """
+    Calculate position size with fixed leverage from settings.
+    
+    Uses risk-based sizing: shares = risk_dollars / stop_distance
+    Caps at max leverage to prevent over-exposure.
+    
+    Returns:
+        dict with shares, position_value, leverage_used, capped
+    """
+    capital = settings.TRADING_CAPITAL
+    leverage = settings.FIXED_LEVERAGE
+    risk_pct = settings.RISK_PER_TRADE_PCT
+    
+    # Risk in dollars
+    risk_dollars = capital * risk_pct
+    
+    # Stop distance
+    stop_distance = abs(entry_price - stop_price)
+    stop_distance_pct = stop_distance / entry_price * 100 if entry_price > 0 else 0
+    
+    # Shares based on risk
+    shares_by_risk = int(risk_dollars / stop_distance) if stop_distance > 0 else 0
+    
+    # Position value
+    position_value = shares_by_risk * entry_price
+    
+    # Actual leverage used
+    actual_leverage = position_value / capital if capital > 0 else 0
+    
+    # Check if within leverage limit
+    max_position_value = capital * leverage
+    
+    if position_value > max_position_value:
+        # Cap at max leverage
+        shares_capped = int(max_position_value / entry_price)
+        position_value_capped = shares_capped * entry_price
+        actual_leverage_capped = position_value_capped / capital
+        
+        return {
+            "shares": shares_capped,
+            "position_value": round(position_value_capped, 2),
+            "leverage_used": round(actual_leverage_capped, 2),
+            "capped": True,
+            "stop_distance_pct": round(stop_distance_pct, 2),
+            "risk_dollars": round(risk_dollars, 2),
+        }
+    
+    return {
+        "shares": shares_by_risk,
+        "position_value": round(position_value, 2),
+        "leverage_used": round(actual_leverage, 2),
+        "capped": False,
+        "stop_distance_pct": round(stop_distance_pct, 2),
+        "risk_dollars": round(risk_dollars, 2),
+    }
+
+
 class OrderExecutor:
     """Executes trading orders on Alpaca."""
     
@@ -130,20 +191,36 @@ class OrderExecutor:
             # Create trade record
             db = SessionLocal()
             try:
+                # Note: Using fields that exist in production DB
                 trade = Trade(
-                    timestamp=datetime.now(ET),
+                    timestamp=datetime.now(ET),  # Legacy column name
                     ticker=symbol,
                     side=OrderSide.LONG if side == "LONG" else OrderSide.SHORT,
                     entry_price=entry_price,
                     shares=shares,
                     stop_price=stop_price,
-                    status=PositionStatus.OPEN,
-                    alpaca_order_id=order.id,
+                    status=PositionStatus.PENDING,  # Pending until order fills
+                    alpaca_order_id=str(order.id),
                     entry_time=datetime.now(ET),
                 )
                 db.add(trade)
                 db.commit()
                 trade_id = trade.id
+            except Exception as db_error:
+                # Order placed successfully, just DB logging failed
+                db.rollback()
+                return {
+                    "status": "submitted",
+                    "order_id": str(order.id),
+                    "trade_id": None,
+                    "db_error": str(db_error),
+                    "symbol": symbol,
+                    "side": side,
+                    "shares": shares,
+                    "entry_price": entry_price,
+                    "stop_price": stop_price,
+                    "order_status": order.status.value,
+                }
             finally:
                 db.close()
             

@@ -1,5 +1,5 @@
 import { Navbar } from '@/components/layout/Navbar'
-import { ScannerControls, UniverseStats, CandidatesTable } from '@/components/scanner'
+import { ScannerControls, UniverseStats, Top20Results } from '@/components/scanner'
 
 export default function ScannerPage() {
   return (
@@ -9,20 +9,28 @@ export default function ScannerPage() {
       <main className="flex-1 container mx-auto px-4 py-6 space-y-6">
         {/* Page Header */}
         <div>
-          <h1 className="text-2xl font-bold">Stock Scanner</h1>
+          <h1 className="text-2xl font-bold">ORB Scanner</h1>
           <p className="text-muted-foreground">
-            Sync ticker universe, fetch daily data, and run ORB scans
+            Top 20 Opening Range Breakout candidates ranked by RVOL
           </p>
         </div>
         
-        {/* Universe Stats */}
-        <UniverseStats />
+        {/* Top 20 Results - Time-aware display */}
+        <Top20Results />
         
-        {/* Scanner Controls */}
-        <ScannerControls />
-        
-        {/* Candidates Table */}
-        <CandidatesTable />
+        {/* Collapsible: Data Controls */}
+        <details className="bg-card rounded-lg border border-border">
+          <summary className="px-4 py-3 cursor-pointer font-medium hover:bg-secondary/50 transition-colors">
+            📊 Data Sync & Universe Stats
+          </summary>
+          <div className="p-4 space-y-6 border-t border-border">
+            {/* Universe Stats */}
+            <UniverseStats />
+            
+            {/* Scanner Controls */}
+            <ScannerControls />
+          </div>
+        </details>
       </main>
     </div>
   )

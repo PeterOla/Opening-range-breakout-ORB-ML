@@ -3,12 +3,19 @@ Scanner API routes.
 Endpoints for running ORB stock scanner and data sync.
 """
 from fastapi import APIRouter, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from services.orb_scanner import scan_orb_candidates, get_todays_candidates
+from services.historical_scanner import (
+    get_historical_top20,
+    get_scanner_mode,
+    get_historical_top20_stream,
+    get_premarket_candidates,
+)
 from services.data_sync import (
     sync_universe_daily_bars,
     sync_daily_bars_fast,
@@ -127,6 +134,282 @@ async def get_today_candidates(
         "count": len(candidates),
         "candidates": candidates,
     }
+
+
+@router.get("/today/live")
+async def get_today_live_pnl(
+    top_n: int = Query(20, ge=1, le=100),
+):
+    """
+    Get today's candidates with live prices and unrealized P&L.
+    
+    For each candidate that would have been entered:
+    - Fetches current price from Alpaca
+    - Calculates unrealized P&L (% and $)
+    - Shows if stop would have been hit
+    
+    Use this during live trading hours for real-time P&L tracking.
+    """
+    from services.orb_scanner import get_todays_candidates_with_live_pnl
+    
+    candidates = await get_todays_candidates_with_live_pnl(top_n)
+    
+    # Calculate summary stats
+    total_pnl_pct = 0
+    total_dollar_pnl = 0
+    total_base_dollar_pnl = 0
+    total_leverage = 0
+    winners = 0
+    losers = 0
+    trades_entered = 0
+    
+    for c in candidates:
+        if c.get("entered"):
+            trades_entered += 1
+            pnl = c.get("pnl_pct", 0)
+            total_pnl_pct += pnl
+            total_dollar_pnl += c.get("dollar_pnl", 0)
+            total_base_dollar_pnl += c.get("base_dollar_pnl", 0)
+            total_leverage += c.get("leverage", 2.0)
+            if pnl > 0:
+                winners += 1
+            elif pnl < 0:
+                losers += 1
+    
+    return {
+        "status": "success",
+        "timestamp": datetime.now(ET).isoformat(),
+        "count": len(candidates),
+        "candidates": candidates,
+        "summary": {
+            "total_candidates": len(candidates),
+            "trades_entered": trades_entered,
+            "winners": winners,
+            "losers": losers,
+            "win_rate": round(winners / trades_entered * 100, 1) if trades_entered > 0 else 0,
+            "total_pnl_pct": round(total_pnl_pct, 2),
+            "avg_pnl_pct": round(total_pnl_pct / trades_entered, 2) if trades_entered > 0 else 0,
+            "total_dollar_pnl": round(total_dollar_pnl, 2),
+            "base_dollar_pnl": round(total_base_dollar_pnl, 2),
+            "avg_leverage": round(total_leverage / trades_entered, 2) if trades_entered > 0 else 0,
+        },
+    }
+
+
+@router.get("/mode")
+async def get_mode():
+    """
+    Get the current scanner mode based on time of day.
+    
+    Modes:
+    - premarket: 04:00-09:35 ET - Show universe candidates (no ORB yet)
+    - live: 09:35-16:00 ET - Real-time scanning (requires subscription)
+    - historical_today: After 16:00 ET - Today's results with P&L
+    - historical_previous: Before 04:00 ET or fallback - Previous day results
+    """
+    mode_info = get_scanner_mode()
+    return {
+        "status": "success",
+        **mode_info,
+    }
+
+
+@router.get("/premarket")
+async def get_premarket():
+    """
+    Get pre-market universe candidates (04:00 - 09:35 ET).
+    
+    Shows stocks that pass daily filters (ATR, volume) and could make Top 20
+    once RVOL is calculated at 9:35 ET.
+    
+    Ranked by avg volume as proxy until opening range data is available.
+    """
+    result = await get_premarket_candidates()
+    return result
+
+
+@router.get("/historical/{date}")
+async def get_historical_scan(
+    date: str,
+    top_n: int = Query(20, ge=1, le=100),
+):
+    """
+    Get historical Top 20 candidates for a specific date with P&L.
+    
+    Date format: YYYY-MM-DD
+    Returns candidates with entry, stop, exit prices and actual P&L.
+    Results are saved to database (simulated_trades table).
+    """
+    result = await get_historical_top20(date, top_n)
+    return result
+
+
+@router.get("/historical/{date}/stream")
+async def get_historical_scan_stream(
+    date: str,
+    top_n: int = Query(20, ge=1, le=100),
+    force_refresh: bool = Query(False, description="Bypass cache and refetch data"),
+):
+    """
+    Stream progress while calculating historical Top 20 candidates.
+    
+    Uses Server-Sent Events (SSE) to stream progress updates.
+    Events:
+    - progress: {step, message, percent, detail}
+    - result: final data (same as /historical/{date})
+    - error: {message}
+    
+    Set force_refresh=true to bypass cache.
+    """
+    return StreamingResponse(
+        get_historical_top20_stream(date, top_n, force_refresh=force_refresh),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/simulated-trades")
+async def get_simulated_trades(
+    start_date: str = Query(None, description="Start date YYYY-MM-DD"),
+    end_date: str = Query(None, description="End date YYYY-MM-DD"),
+    ticker: str = Query(None, description="Filter by ticker"),
+    limit: int = Query(100, ge=1, le=1000, description="Max rows to return"),
+):
+    """
+    Query saved simulated trades from the database.
+    
+    These are historical "what if" trades - NOT actual live trades.
+    Use this for performance analysis, equity curves, etc.
+    """
+    from db.database import SessionLocal
+    from db.models import SimulatedTrade
+    from sqlalchemy import desc, and_
+    
+    db = SessionLocal()
+    try:
+        query = db.query(SimulatedTrade)
+        
+        filters = []
+        if start_date:
+            filters.append(SimulatedTrade.trade_date >= datetime.strptime(start_date, "%Y-%m-%d"))
+        if end_date:
+            filters.append(SimulatedTrade.trade_date <= datetime.strptime(end_date, "%Y-%m-%d"))
+        if ticker:
+            filters.append(SimulatedTrade.ticker == ticker.upper())
+        
+        if filters:
+            query = query.filter(and_(*filters))
+        
+        trades = query.order_by(desc(SimulatedTrade.trade_date), SimulatedTrade.rvol_rank).limit(limit).all()
+        
+        # Aggregate stats
+        total_pnl = sum(t.pnl_pct or 0 for t in trades)
+        entered = [t for t in trades if t.exit_reason and t.exit_reason != "NO_ENTRY"]
+        winners = [t for t in entered if (t.pnl_pct or 0) > 0]
+        losers = [t for t in entered if (t.pnl_pct or 0) < 0]
+        
+        return {
+            "status": "success",
+            "count": len(trades),
+            "summary": {
+                "total_trades": len(trades),
+                "trades_entered": len(entered),
+                "winners": len(winners),
+                "losers": len(losers),
+                "win_rate": round(len(winners) / len(entered) * 100, 1) if entered else 0,
+                "total_pnl_pct": round(total_pnl, 2),
+                "avg_pnl_pct": round(total_pnl / len(entered), 2) if entered else 0,
+            },
+            "trades": [
+                {
+                    "id": t.id,
+                    "date": str(t.trade_date.date()) if t.trade_date else None,
+                    "ticker": t.ticker,
+                    "side": t.side.value if t.side else None,
+                    "rank": t.rvol_rank,
+                    "rvol": t.rvol,
+                    "entry_price": t.entry_price,
+                    "stop_price": t.stop_price,
+                    "exit_price": t.exit_price,
+                    "exit_reason": t.exit_reason,
+                    "pnl_pct": t.pnl_pct,
+                    "is_simulated": True,  # Always true for this table
+                }
+                for t in trades
+            ],
+        }
+    finally:
+        db.close()
+
+
+@router.get("/simulated-trades/summary")
+async def get_simulated_trades_summary():
+    """
+    Get daily aggregated P&L from simulated trades.
+    
+    Useful for equity curve plotting.
+    """
+    from db.database import SessionLocal
+    from db.models import SimulatedTrade
+    from sqlalchemy import func, and_
+    
+    db = SessionLocal()
+    try:
+        # Daily P&L aggregation
+        daily_stats = db.query(
+            func.date(SimulatedTrade.trade_date).label("date"),
+            func.count(SimulatedTrade.id).label("total_candidates"),
+            func.sum(
+                func.case(
+                    (SimulatedTrade.exit_reason != "NO_ENTRY", 1),
+                    else_=0
+                )
+            ).label("trades_entered"),
+            func.sum(
+                func.case(
+                    (and_(SimulatedTrade.pnl_pct != None, SimulatedTrade.pnl_pct > 0), 1),
+                    else_=0
+                )
+            ).label("winners"),
+            func.sum(SimulatedTrade.pnl_pct).label("total_pnl"),
+        ).group_by(
+            func.date(SimulatedTrade.trade_date)
+        ).order_by(
+            func.date(SimulatedTrade.trade_date)
+        ).all()
+        
+        results = []
+        cumulative_pnl = 0
+        
+        for row in daily_stats:
+            day_pnl = row.total_pnl or 0
+            cumulative_pnl += day_pnl
+            entered = row.trades_entered or 0
+            winners = row.winners or 0
+            
+            results.append({
+                "date": str(row.date),
+                "total_candidates": row.total_candidates,
+                "trades_entered": entered,
+                "winners": winners,
+                "losers": entered - winners,
+                "win_rate": round(winners / entered * 100, 1) if entered > 0 else 0,
+                "day_pnl_pct": round(day_pnl, 2),
+                "cumulative_pnl_pct": round(cumulative_pnl, 2),
+            })
+        
+        return {
+            "status": "success",
+            "days": len(results),
+            "total_pnl_pct": round(cumulative_pnl, 2),
+            "daily_summary": results,
+        }
+    finally:
+        db.close()
 
 
 # ============ Data Sync Endpoints ============
@@ -442,6 +725,7 @@ async def list_all_tickers(
     per_page: int = Query(50, ge=10, le=200, description="Items per page"),
     search: str = Query(None, description="Search by symbol or name"),
     exchange: str = Query(None, description="Filter by exchange (XNYS, XNAS)"),
+    qualified: bool = Query(None, description="Filter to only qualified tickers (meets all filters)"),
     sort_by: str = Query("symbol", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
 ):
@@ -456,6 +740,14 @@ async def list_all_tickers(
     try:
         # Base query
         query = db.query(Ticker).filter(Ticker.active == True)
+        
+        # Apply qualified filter (meets all filters: price >= $5, vol >= 1M, ATR >= $0.50)
+        if qualified:
+            query = query.filter(
+                Ticker.meets_price_filter == True,
+                Ticker.meets_volume_filter == True,
+                Ticker.meets_atr_filter == True,
+            )
         
         # Apply search filter
         if search:

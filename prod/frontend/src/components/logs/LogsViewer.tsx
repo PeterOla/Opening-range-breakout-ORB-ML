@@ -35,12 +35,12 @@ export function LogsViewer() {
   if (componentFilter) queryParams.set('component', componentFilter)
   
   const { data: logs, isLoading } = useSWR<Log[]>(
-    `/api/logs?${queryParams.toString()}`,
+    `/api/system/logs?${queryParams.toString()}`,
     fetcher,
     { refreshInterval: 3000 }
   )
   
-  const components = [...new Set(logs?.map(l => l.component) || [])]
+  const components = [...new Set(Array.isArray(logs) ? logs.map(l => l.component) : [])]
   
   return (
     <div className="space-y-4">
