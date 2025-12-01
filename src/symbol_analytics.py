@@ -22,18 +22,24 @@ def compute_symbol_leaderboard(trades_path: str, output_dir: str):
     # Flatten column names
     symbol_stats.columns = ['symbol', 'total_pnl', 'n_trades', 'avg_pnl', 'first_trade', 'last_trade']
     
-    # Compute win rate and cumulative R
-    win_rates = df.groupby('symbol').apply(
-        lambda x: (x['net_pnl'] > 0).sum() / len(x) if len(x) > 0 else 0
-    ).rename('win_rate')
-    
+    # Compute win rate and cumulative R (robust to pandas groupby changes)
+    win_rates = (
+        df.assign(_win=(df['net_pnl'] > 0).astype(float))
+          .groupby('symbol', as_index=False)['_win']
+          .mean()
+          .rename(columns={'_win': 'win_rate'})
+    )
+
     # Approximate R-multiples (assuming net_pnl already accounts for risk-adjusted sizing)
     # For exact R, we'd need stop distance per trade; for now, use normalized P&L
     # Simple proxy: cumulative P&L / (n_trades * avg_abs_pnl)
-    cumulative_r = df.groupby('symbol').apply(
-        lambda x: x['net_pnl'].sum() / (abs(x['net_pnl']).mean() * len(x)) if len(x) > 0 and abs(x['net_pnl']).mean() > 0 else 0
-    ).rename('cumulative_r')
-    
+    # Cumulative R proxy per symbol
+    cumulative_r = (
+        df.groupby('symbol')['net_pnl']
+          .apply(lambda s: (s.sum() / (s.abs().mean() * len(s))) if len(s) > 0 and s.abs().mean() > 0 else 0.0)
+          .reset_index(name='cumulative_r')
+    )
+
     # Merge
     symbol_stats = symbol_stats.merge(win_rates, on='symbol', how='left')
     symbol_stats = symbol_stats.merge(cumulative_r, on='symbol', how='left')
@@ -91,15 +97,20 @@ def compute_rvol_bucket_analysis(trades_path: str, output_dir: str):
     bucket_stats.columns = ['rvol_bucket', 'total_pnl', 'avg_pnl', 'n_trades']
     
     # Win rate per bucket
-    win_rates = df.groupby('rvol_bucket').apply(
-        lambda x: (x['net_pnl'] > 0).sum() / len(x) if len(x) > 0 else 0
-    ).rename('win_rate')
-    
+    win_rates = (
+        df.assign(_win=(df['net_pnl'] > 0).astype(float))
+          .groupby('rvol_bucket', as_index=False)['_win']
+          .mean()
+          .rename(columns={'_win': 'win_rate'})
+    )
+
     # Approximate R per bucket
-    avg_r = df.groupby('rvol_bucket').apply(
-        lambda x: x['net_pnl'].mean() / abs(x['net_pnl']).mean() if len(x) > 0 and abs(x['net_pnl']).mean() > 0 else 0
-    ).rename('avg_r')
-    
+    avg_r = (
+        df.groupby('rvol_bucket')['net_pnl']
+          .apply(lambda s: (s.mean() / s.abs().mean()) if len(s) > 0 and s.abs().mean() > 0 else 0.0)
+          .reset_index(name='avg_r')
+    )
+
     bucket_stats = bucket_stats.merge(win_rates, on='rvol_bucket', how='left')
     bucket_stats = bucket_stats.merge(avg_r, on='rvol_bucket', how='left')
     

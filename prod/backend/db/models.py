@@ -240,6 +240,7 @@ class SimulatedTrade(Base):
     __tablename__ = "simulated_trades"
     
     id = Column(Integer, primary_key=True, index=True)
+    backtest_run_id = Column(Integer, nullable=True, index=True)  # NULL = default/production run
     trade_date = Column(DateTime, nullable=False, index=True)  # Trading day
     ticker = Column(String(10), nullable=False, index=True)
     side = Column(SQLEnum(OrderSide), nullable=False)
@@ -260,15 +261,18 @@ class SimulatedTrade(Base):
     stop_price = Column(Float, nullable=False)   # Entry ± 10% ATR
     exit_price = Column(Float, nullable=True)    # Actual exit price
     exit_reason = Column(String(20), nullable=True)  # STOPPED, EOD, NO_ENTRY
+    entry_time = Column(String(10), nullable=True)   # HH:MM format
+    exit_time = Column(String(10), nullable=True)    # HH:MM format
     
     # P&L (null if NO_ENTRY)
     pnl_pct = Column(Float, nullable=True)
     day_change_pct = Column(Float, nullable=True)  # Stock's % change that day
     
-    # Position sizing (1% risk model)
+    # Position sizing (fixed 2x leverage)
     stop_distance_pct = Column(Float, nullable=True)  # Stop distance as % of entry
-    leverage = Column(Float, nullable=True)           # Effective leverage from position sizing
-    dollar_pnl = Column(Float, nullable=True)         # Dollar P&L on $1000 capital @ 1% risk
+    leverage = Column(Float, nullable=True)           # Effective leverage (2.0)
+    dollar_pnl = Column(Float, nullable=True)         # Dollar P&L at leverage
+    base_dollar_pnl = Column(Float, nullable=True)    # Dollar P&L at 1x leverage
     
     # Metrics at time of scan
     atr_14 = Column(Float, nullable=True)
@@ -279,7 +283,7 @@ class SimulatedTrade(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     
     __table_args__ = (
-        UniqueConstraint('trade_date', 'ticker', name='uix_simtrade_date_ticker'),
+        UniqueConstraint('backtest_run_id', 'trade_date', 'ticker', name='uix_simtrade_run_date_ticker'),
     )
 
 
@@ -351,3 +355,126 @@ class ScannerCache(Base):
     # Timestamps
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+# ============ HISTORICAL BACKTEST TABLES ============
+
+class DailyMetricsHistorical(Base):
+    """
+    Pre-computed daily metrics for all symbols across all historical dates.
+    
+    Used by bulk backtest to avoid recomputing ATR/avg_vol for each date.
+    Computed from parquet files in data/processed/daily/
+    """
+    __tablename__ = "daily_metrics_historical"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    date = Column(DateTime, nullable=False, index=True)
+    
+    # OHLCV for the day
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    
+    # Pre-computed metrics (14-day lookback)
+    atr_14 = Column(Float, nullable=True)
+    avg_volume_14 = Column(Float, nullable=True)
+    prev_close = Column(Float, nullable=True)
+    
+    # Filter flags (computed at insert time)
+    meets_price_filter = Column(Boolean, default=False)   # close >= $5
+    meets_volume_filter = Column(Boolean, default=False)  # avg_volume_14 >= 1M
+    meets_atr_filter = Column(Boolean, default=False)     # atr_14 >= $0.50
+    passes_all_filters = Column(Boolean, default=False)   # All 3 filters
+    
+    __table_args__ = (
+        UniqueConstraint('symbol', 'date', name='uix_dailymetrics_symbol_date'),
+    )
+
+
+class BacktestRun(Base):
+    """
+    Track different backtest configurations/runs.
+    
+    Allows comparing different strategy variants (e.g., top 10 vs top 20).
+    """
+    __tablename__ = "backtest_runs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)  # e.g., "ORB Top20 2x Leverage"
+    description = Column(String(500), nullable=True)
+    
+    # Date range
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    
+    # Strategy parameters (stored as JSON-like string)
+    top_n = Column(Integer, default=20)           # Number of candidates to trade
+    capital = Column(Float, default=1000.0)       # Starting capital
+    leverage = Column(Float, default=2.0)         # Fixed leverage
+    min_price = Column(Float, default=5.0)        # Minimum stock price
+    min_atr = Column(Float, default=0.50)         # Minimum ATR
+    min_avg_volume = Column(Float, default=1000000.0)  # Minimum avg volume
+    
+    # Execution stats
+    total_days = Column(Integer, default=0)
+    days_processed = Column(Integer, default=0)
+    status = Column(String(20), default="pending")  # pending, running, completed, failed
+    
+    # Performance summary (computed after completion)
+    total_trades = Column(Integer, default=0)
+    winning_trades = Column(Integer, default=0)
+    losing_trades = Column(Integer, default=0)
+    no_entry_trades = Column(Integer, default=0)
+    total_pnl_pct = Column(Float, default=0.0)
+    total_pnl_dollars = Column(Float, default=0.0)
+    win_rate = Column(Float, default=0.0)
+    max_drawdown_pct = Column(Float, default=0.0)
+    sharpe_ratio = Column(Float, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class DailyPerformance(Base):
+    """
+    Aggregated daily P&L for fast analytics queries.
+    
+    Pre-computed from simulated_trades to avoid expensive aggregations.
+    """
+    __tablename__ = "daily_performance"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    backtest_run_id = Column(Integer, nullable=True, index=True)  # NULL = production/default
+    date = Column(DateTime, nullable=False, index=True)
+    
+    # Trade counts
+    total_trades = Column(Integer, default=0)
+    trades_entered = Column(Integer, default=0)
+    winners = Column(Integer, default=0)
+    losers = Column(Integer, default=0)
+    
+    # P&L
+    total_pnl_pct = Column(Float, default=0.0)
+    total_pnl_dollars = Column(Float, default=0.0)  # At 1x leverage
+    total_pnl_leveraged = Column(Float, default=0.0)  # At actual leverage
+    
+    # Best/worst trades
+    best_trade_pnl = Column(Float, default=0.0)
+    best_trade_ticker = Column(String(10), nullable=True)
+    worst_trade_pnl = Column(Float, default=0.0)
+    worst_trade_ticker = Column(String(10), nullable=True)
+    
+    # Running totals (for equity curve)
+    cumulative_pnl = Column(Float, default=0.0)
+    equity = Column(Float, default=1000.0)  # Starting capital + cumulative P&L
+    drawdown_pct = Column(Float, default=0.0)  # Current drawdown from peak
+    
+    __table_args__ = (
+        UniqueConstraint('backtest_run_id', 'date', name='uix_dailyperf_run_date'),
+    )

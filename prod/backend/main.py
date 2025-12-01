@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from api.routes import positions, account, trades, signals, metrics, system, scanner, execution
 from api.websocket import router as ws_router
+from routers.analytics import router as analytics_router
 from db.database import engine, Base
 from core.config import settings
 from services.scheduler import start_scheduler, stop_scheduler
@@ -128,6 +129,7 @@ app.include_router(system.router, prefix="/api/system", tags=["System"])
 app.include_router(scanner.router, prefix="/api", tags=["Scanner"])
 app.include_router(execution.router, prefix="/api", tags=["Execution"])
 app.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
+app.include_router(analytics_router, tags=["Analytics"])
 
 
 @app.get("/")
