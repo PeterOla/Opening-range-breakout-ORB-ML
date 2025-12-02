@@ -28,10 +28,9 @@ LEVERAGE = 2.0
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 DATA_DIR_5MIN = DATA_DIR / "processed" / "5min"
 DATA_DIR_DAILY = DATA_DIR / "processed" / "daily"
+# Output directory will be determined per run (see run_backtest)
 OUT_DIR = DATA_DIR / "backtest"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-TRADES_PARQUET = OUT_DIR / "simulated_trades.parquet"
-DAILY_PARQUET = OUT_DIR / "daily_performance.parquet"
 
 # Opening range time (Eastern)
 OR_START = time(9, 30)
@@ -181,7 +180,15 @@ def compute_daily_metrics(df_daily: pd.DataFrame, target_date: date) -> Optional
         'prev_close': prev_close if not np.isnan(prev_close) else None,
     }
 
-def process_day(trading_date: date, top_n: int) -> dict:
+def process_day(
+    trading_date: date,
+    top_n: int,
+    *,
+    min_atr: float,
+    min_avg_volume: int,
+    stop_mode: str,
+    verbose: bool = False,
+) -> dict:
     # Convert pandas Timestamp to date if needed
     if hasattr(trading_date, 'date'):
         trading_date = trading_date.date()
@@ -230,11 +237,12 @@ def process_day(trading_date: date, top_n: int) -> dict:
         if or_data['or_open'] < 5.0:
             stats['price_filter'] += 1
             continue
-        if not metrics['atr_14'] or metrics['atr_14'] < 0.50:  # Restored to research spec 0.50
+        # ATR threshold (parameterised)
+        if not metrics['atr_14'] or metrics['atr_14'] < min_atr:
             stats['atr_filter'] += 1
             continue
-        # Volume filter per research spec
-        if not metrics['avg_volume_14'] or metrics['avg_volume_14'] < 1_000_000:
+        # Volume filter (parameterised)
+        if not metrics['avg_volume_14'] or metrics['avg_volume_14'] < min_avg_volume:
             stats['vol_filter'] += 1
             continue
         if or_data['or_close'] > or_data['or_open']:
@@ -257,10 +265,11 @@ def process_day(trading_date: date, top_n: int) -> dict:
             **metrics,
         })
     
-    print(f"[DEBUG] Filters: no_daily={stats['no_daily']}, no_date={stats['no_date']}, no_metrics={stats['no_metrics']}, "
-          f"no_5min={stats['no_5min']}, no_or={stats['no_or']}, price={stats['price_filter']}, atr={stats['atr_filter']}, "
-          f"vol={stats['vol_filter']}, doji={stats['doji']}, rvol={stats['rvol_filter']}")
-    print(f"[DEBUG] Candidates after filters: {len(trades)}")
+        if verbose:
+          print(f"[DEBUG] Filters: no_daily={stats['no_daily']}, no_date={stats['no_date']}, no_metrics={stats['no_metrics']}, "
+              f"no_5min={stats['no_5min']}, no_or={stats['no_or']}, price={stats['price_filter']}, atr={stats['atr_filter']}, "
+              f"vol={stats['vol_filter']}, doji={stats['doji']}, rvol={stats['rvol_filter']}")
+          print(f"[DEBUG] Candidates after filters: {len(trades)}")
     
     if not trades:
         return {'status': 'no_candidates', 'trades': []}
@@ -268,7 +277,14 @@ def process_day(trading_date: date, top_n: int) -> dict:
     results = []
     for rank, c in enumerate(trades, 1):
         entry_level = c['or_high'] if c['direction'] == 1 else c['or_low']
-        stop_level = c['or_low'] if c['direction'] == 1 else c['or_high']
+        # Stop selection
+        if stop_mode == 'or':
+            stop_level = c['or_low'] if c['direction'] == 1 else c['or_high']
+        elif stop_mode == 'atr':
+            atr_stop = 0.10 * float(c['atr_14']) if c.get('atr_14') is not None else 0.0
+            stop_level = (entry_level - atr_stop) if c['direction'] == 1 else (entry_level + atr_stop)
+        else:
+            raise ValueError(f"Unsupported stop_mode: {stop_mode}")
         sim = simulate_trade(c['bars'], c['direction'], entry_level, stop_level)
         stop_distance_pct = abs(entry_level - stop_level) / entry_level * 100.0
         results.append({
@@ -300,20 +316,47 @@ def process_day(trading_date: date, top_n: int) -> dict:
         })
     return {'status': 'success', 'trades': results}
 
-def append_parquet(path: Path, df: pd.DataFrame):
-    # Always overwrite - no append behavior
+def write_parquet(path: Path, df: pd.DataFrame):
     df.to_parquet(path, index=False)
 
-def run_backtest(start: str, end: str, top_n: int):
+def run_backtest(
+    start: str,
+    end: str,
+    top_n: int,
+    *,
+    stop_mode: str,
+    min_atr: float,
+    min_avg_volume: int,
+    run_name: str,
+    verbose: bool = False,
+):
+    # Per-run output directory
+    run_dir = OUT_DIR / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    trades_path = run_dir / "simulated_trades.parquet"
+    daily_path = run_dir / "daily_performance.parquet"
+
     days = list_trading_days(start, end)
-    print(f"Trading days: {len(days)}")
+    print(f"Trading days: {len(days)} | stop_mode={stop_mode} | min_atr={min_atr} | min_avg_volume={min_avg_volume} | run={run_name}")
+
     totals = {'days': 0, 'trades': 0, 'entered': 0, 'winners': 0, 'losers': 0, 'pnl_base': 0.0}
+    all_trades = []
+    all_daily = []
+
     for d in tqdm(days, desc="Processing days"):
-        day_res = process_day(d, top_n)
+        day_res = process_day(
+            d,
+            top_n,
+            min_atr=min_atr,
+            min_avg_volume=min_avg_volume,
+            stop_mode=stop_mode,
+            verbose=verbose,
+        )
         if day_res['status'] != 'success':
             continue
         df_trades = pd.DataFrame(day_res['trades'])
-        append_parquet(TRADES_PARQUET, df_trades)
+        all_trades.append(df_trades)
+
         entered = df_trades[df_trades['exit_reason'] != 'NO_ENTRY']
         winners = entered[entered['pnl_pct'] > 0]
         losers = entered[entered['pnl_pct'] < 0]
@@ -326,13 +369,20 @@ def run_backtest(start: str, end: str, top_n: int):
             'total_base_pnl': float(entered['base_dollar_pnl'].fillna(0).sum()),
             'total_leveraged_pnl': float(entered['dollar_pnl'].fillna(0).sum()),
         }])
-        append_parquet(DAILY_PARQUET, day_perf)
+        all_daily.append(day_perf)
         totals['days'] += 1
         totals['trades'] += len(df_trades)
         totals['entered'] += len(entered)
         totals['winners'] += len(winners)
         totals['losers'] += len(losers)
         totals['pnl_base'] += float(entered['base_dollar_pnl'].fillna(0).sum())
+
+    # Write per-run outputs once
+    if all_trades:
+        write_parquet(trades_path, pd.concat(all_trades, ignore_index=True))
+    if all_daily:
+        write_parquet(daily_path, pd.concat(all_daily, ignore_index=True))
+
     print(f"\nDone. Days: {totals['days']}, Trades: {totals['trades']}, Entered: {totals['entered']}, WinRate: {(totals['winners']/totals['entered']*100 if totals['entered'] else 0):.1f}%")
     print(f"Total P&L (1x): ${totals['pnl_base']:,.2f} | (2x): ${totals['pnl_base']*LEVERAGE:,.2f}")
 
@@ -341,9 +391,23 @@ def main():
     ap.add_argument('--start', type=str, default='2021-01-03')
     ap.add_argument('--end', type=str, default='2021-01-05')
     ap.add_argument('--top-n', type=int, default=20)
+    ap.add_argument('--stop-mode', choices=['or', 'atr'], default='or')
+    ap.add_argument('--min-atr', type=float, default=0.50)
+    ap.add_argument('--min-avg-volume', type=int, default=1_000_000)
+    ap.add_argument('--run-name', type=str, default='default')
+    ap.add_argument('--verbose', action='store_true')
     args = ap.parse_args()
     print(f"Bulk Backtest (local) {args.start} → {args.end} | Top {args.top_n}")
-    run_backtest(args.start, args.end, args.top_n)
+    run_backtest(
+        args.start,
+        args.end,
+        args.top_n,
+        stop_mode=args.stop_mode,
+        min_atr=args.min_atr,
+        min_avg_volume=args.min_avg_volume,
+        run_name=args.run_name,
+        verbose=args.verbose,
+    )
 
 if __name__ == "__main__":
     main()
