@@ -15,7 +15,7 @@ from sqlalchemy import and_
 
 from db.database import SessionLocal
 from db.models import Signal, OpeningRange, OrderSide, OrderStatus
-from core.config import settings
+from core.config import settings, get_strategy_config
 
 
 ET = ZoneInfo("America/New_York")
@@ -74,18 +74,21 @@ def generate_signals_from_candidates(
     Args:
         candidates: List of candidates from orb_scanner.scan_orb_candidates()
         account_equity: Current account equity for position sizing
-        risk_per_trade_pct: Risk per trade (defaults to settings)
-        max_positions: Maximum number of signals to generate (defaults to settings)
+        risk_per_trade_pct: Risk per trade (defaults to strategy config)
+        max_positions: Maximum number of signals to generate (defaults to strategy config)
         save_to_db: Whether to save signals to database
         
     Returns:
         List of signal dicts ready for execution
     """
+    # Get strategy config for defaults
+    strategy = get_strategy_config()
+    
     if risk_per_trade_pct is None:
-        risk_per_trade_pct = settings.POSITION_SIZE_PCT
+        risk_per_trade_pct = strategy["risk_per_trade"]
     
     if max_positions is None:
-        max_positions = settings.MAX_OPEN_POSITIONS
+        max_positions = strategy["top_n"]
     
     db = SessionLocal() if save_to_db else None
     signals = []
@@ -172,30 +175,48 @@ def generate_signals_from_candidates(
 
 
 async def run_signal_generation(
-    account_equity: float,
+    account_equity: float = None,
     risk_per_trade_pct: float = None,
     max_positions: int = None,
+    direction: str = None,
 ) -> dict:
     """
     Full signal generation pipeline.
     
-    1. Get today's scanned candidates from database
-    2. Generate signals with position sizing
-    3. Return signals ready for execution
+    1. Fetch account equity from Alpaca (if not provided)
+    2. Get today's scanned candidates from database
+    3. Generate signals with position sizing
+    4. Return signals ready for execution
     
     Args:
-        account_equity: Current account equity
-        risk_per_trade_pct: Risk per trade percentage
-        max_positions: Maximum positions to open
+        account_equity: Current account equity (auto-fetched from Alpaca if None)
+        risk_per_trade_pct: Risk per trade percentage (defaults to strategy config)
+        max_positions: Maximum positions to open (defaults to strategy config)
+        direction: Signal direction filter (defaults to strategy config)
         
     Returns:
         Dict with status and generated signals
     """
     from services.orb_scanner import get_todays_candidates
+    from execution.order_executor import get_executor
+    
+    # Get strategy config for defaults
+    strategy = get_strategy_config()
     
     try:
+        # Auto-fetch equity from Alpaca if not provided
+        if account_equity is None:
+            executor = get_executor()
+            account = executor.get_account()
+            account_equity = float(account.get("equity", 10000))
+        
+        # Apply strategy defaults
+        top_n = max_positions or strategy["top_n"]
+        dir_filter = direction or strategy["direction"]
+        risk_pct = risk_per_trade_pct or strategy["risk_per_trade"]
+        
         # Get today's candidates
-        candidates = await get_todays_candidates(top_n=max_positions or settings.MAX_OPEN_POSITIONS)
+        candidates = await get_todays_candidates(top_n=top_n, direction=dir_filter)
         
         if not candidates:
             return {
@@ -204,12 +225,12 @@ async def run_signal_generation(
                 "signals": [],
             }
         
-        # Generate signals
+        # Generate signals using strategy config
         signals = generate_signals_from_candidates(
             candidates=candidates,
             account_equity=account_equity,
-            risk_per_trade_pct=risk_per_trade_pct,
-            max_positions=max_positions,
+            risk_per_trade_pct=risk_pct,
+            max_positions=top_n,
             save_to_db=True,
         )
         

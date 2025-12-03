@@ -30,15 +30,14 @@ class Settings(BaseSettings):
         """Parse comma-separated CORS origins into list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
     
-    # Trading Parameters
-    MAX_OPEN_POSITIONS: int = 20          # Top 20 candidates
-    DAILY_LOSS_LIMIT_PCT: float = 0.05    # 5% daily loss limit
-    POSITION_SIZE_PCT: float = 0.02       # Legacy - not used with new sizing
+    # Strategy Selection (controls top_n, direction, risk_per_trade)
+    # Options: top5_long, top10_long, top20_both, top50_both
+    ORB_STRATEGY: str = "top20_both"
     
-    # Position Sizing (Fixed Leverage)
-    TRADING_CAPITAL: float = 1000.0       # Capital allocated to strategy
-    FIXED_LEVERAGE: float = 2.0           # Fixed 2x leverage
-    RISK_PER_TRADE_PCT: float = 0.01      # 1% risk per trade = $10 on $1000
+    # Risk Management
+    DAILY_LOSS_LIMIT_PCT: float = 0.10    # 10% daily loss limit (kill switch)
+    FIXED_LEVERAGE: float = 4.0           # 4x intraday margin
+    DAILY_RISK_PCT: float = 0.10          # 10% daily risk target
     
     # System
     KILL_SWITCH_FILE: str = ".stop_trading"
@@ -51,3 +50,45 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Strategy presets - all target 10% daily risk
+STRATEGY_CONFIGS = {
+    "top5_long": {
+        "top_n": 5,
+        "direction": "long",
+        "risk_per_trade": 0.02,  # 2% per trade = 10% daily
+        "description": "Top 5 LONG only",
+    },
+    "top10_long": {
+        "top_n": 10,
+        "direction": "long",
+        "risk_per_trade": 0.01,  # 1% per trade = 10% daily
+        "description": "Top 10 LONG only",
+    },
+    "top20_both": {
+        "top_n": 20,
+        "direction": "both",
+        "risk_per_trade": 0.005,  # 0.5% per trade = 10% daily
+        "description": "Top 20 Long & Short",
+    },
+    "top50_both": {
+        "top_n": 50,
+        "direction": "both",
+        "risk_per_trade": 0.002,  # 0.2% per trade = 10% daily
+        "description": "Top 50 Long & Short",
+    },
+}
+
+
+def get_strategy_config() -> dict:
+    """Get the active strategy configuration from ORB_STRATEGY env var."""
+    strategy_name = settings.ORB_STRATEGY.lower()
+    if strategy_name not in STRATEGY_CONFIGS:
+        raise ValueError(
+            f"Unknown strategy: {strategy_name}. "
+            f"Valid options: {list(STRATEGY_CONFIGS.keys())}"
+        )
+    config = STRATEGY_CONFIGS[strategy_name].copy()
+    config["name"] = strategy_name
+    return config

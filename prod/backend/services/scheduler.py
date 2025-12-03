@@ -5,7 +5,8 @@ Automates:
 1. 6:00 PM ET - Nightly data sync (tickers + daily bars)
 2. Dynamic EOD flatten - 5 mins before market close (handles early close days)
 3. 9:25 AM ET - Pre-market health check
-4. 4:05 PM ET - Daily P&L logging
+4. 9:36 AM ET - Auto signal generation + execution (OR breakout)
+5. 4:05 PM ET - Daily P&L logging
 """
 import logging
 from datetime import datetime, timedelta
@@ -166,6 +167,134 @@ async def job_premarket_check():
         raise
 
 
+async def job_auto_execute_orb():
+    """
+    9:36 AM ET - Auto signal generation and execution.
+    
+    Runs 6 minutes after market open when the Opening Range is complete.
+    1. Load strategy config (top_n, direction, risk_per_trade)
+    2. Fetch LIVE equity from Alpaca (for compounding)
+    3. Run ORB scanner → generate signals → execute orders
+    """
+    from services.signal_engine import run_signal_generation, get_pending_signals, calculate_position_size
+    from execution.order_executor import get_executor
+    from core.config import get_strategy_config
+    from db.database import SessionLocal
+    from db.models import Signal
+    
+    logger.info("🚀 AUTO-EXECUTE ORB triggered at 9:36 AM ET")
+    
+    # Load strategy configuration
+    strategy = get_strategy_config()
+    logger.info(f"🎯 Strategy: {strategy['name']} ({strategy['description']})")
+    logger.info(f"   Top-N: {strategy['top_n']}, Direction: {strategy['direction']}, Risk/Trade: {strategy['risk_per_trade']*100:.1f}%")
+    
+    executor = get_executor()
+    
+    # Check kill switch first
+    if executor.is_kill_switch_active():
+        logger.warning("⚠️ Kill switch ACTIVE - skipping auto-execution")
+        return {"status": "blocked", "reason": "kill_switch_active"}
+    
+    # Check market is open today
+    calendar = get_market_calendar()
+    if not calendar.is_market_open_today():
+        logger.info("📅 Market closed today - skipping auto-execution")
+        return {"status": "skipped", "reason": "market_closed"}
+    
+    try:
+        # Fetch LIVE equity from Alpaca — this is key for compounding!
+        # As you profit, equity grows → position sizes grow automatically
+        account = executor.get_account()
+        equity = float(account.get("equity", 10000))
+        logger.info(f"💰 Live account equity: ${equity:,.2f} (compounding base)")
+        
+        # Step 1: Generate signals using strategy config
+        logger.info("📊 Step 1: Running signal generation...")
+        result = await run_signal_generation(
+            account_equity=equity,
+            risk_per_trade_pct=strategy["risk_per_trade"],
+            max_positions=strategy["top_n"],
+            direction=strategy["direction"],
+        )
+        
+        signals_generated = result.get("signals_generated", 0)
+        logger.info(f"📊 Generated {signals_generated} signals")
+        
+        if signals_generated == 0:
+            logger.info("📊 No signals generated - nothing to execute")
+            return {"status": "no_signals", "signals_generated": 0, "orders_placed": 0}
+        
+        # Step 2: Execute pending signals
+        logger.info("💹 Step 2: Executing pending signals...")
+        pending = get_pending_signals()
+        
+        if not pending:
+            logger.warning("⚠️ Signals generated but none pending - already executed?")
+            return {"status": "already_executed", "signals_generated": signals_generated}
+        
+        # Get current account equity for position sizing
+        account = executor.get_account()
+        equity = account.get("equity", 1500)
+        
+        orders_placed = 0
+        orders_failed = 0
+        results = []
+        
+        db = SessionLocal()
+        try:
+            for signal in pending:
+                # Calculate shares based on risk
+                shares = calculate_position_size(
+                    entry_price=signal["entry_price"],
+                    stop_price=signal["stop_price"],
+                    account_equity=equity,
+                )
+                
+                if shares > 0:
+                    order_result = executor.place_entry_order(
+                        symbol=signal["symbol"],
+                        side=signal["side"],
+                        shares=shares,
+                        entry_price=signal["entry_price"],
+                        stop_price=signal["stop_price"],
+                        signal_id=signal["id"],
+                    )
+                    results.append(order_result)
+                    
+                    if order_result.get("status") == "submitted":
+                        orders_placed += 1
+                        logger.info(f"✅ Placed {signal['side']} order: {signal['symbol']} x{shares}")
+                    else:
+                        orders_failed += 1
+                        logger.warning(f"❌ Failed order: {signal['symbol']} - {order_result.get('error')}")
+                else:
+                    orders_failed += 1
+                    logger.warning(f"⚠️ Skipped {signal['symbol']} - calculated 0 shares")
+        finally:
+            db.close()
+        
+        logger.info(f"""
+        ========== AUTO-EXECUTE COMPLETE ==========
+        Signals Generated: {signals_generated}
+        Orders Placed:     {orders_placed}
+        Orders Failed:     {orders_failed}
+        ============================================
+        """)
+        
+        return {
+            "status": "success",
+            "signals_generated": signals_generated,
+            "orders_placed": orders_placed,
+            "orders_failed": orders_failed,
+            "results": results,
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Auto-execute failed: {e}", exc_info=True)
+        raise
+
+
 async def job_daily_summary():
     """
     4:05 PM ET - Log daily P&L summary.
@@ -277,6 +406,22 @@ def start_scheduler():
         replace_existing=True,
     )
     logger.info("📅 Scheduled: Pre-market check at 9:25 AM ET (Mon-Fri)")
+    
+    # Job 2b: Auto signal generation + execution at 9:36 AM ET (Mon-Fri)
+    # Runs 6 mins after market open when Opening Range is complete
+    scheduler.add_job(
+        job_auto_execute_orb,
+        CronTrigger(
+            hour=9,
+            minute=36,
+            day_of_week="mon-fri",
+            timezone=ET,
+        ),
+        id="auto_execute_orb",
+        name="Auto-Execute ORB Signals (9:36 AM)",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Auto ORB execution at 9:36 AM ET (Mon-Fri)")
     
     # Job 3: Daily summary - dynamic based on market close
     # Will run 5 mins after actual market close
