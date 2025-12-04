@@ -7,6 +7,7 @@ Automates:
 3. 9:25 AM ET - Pre-market health check
 4. 9:36 AM ET - Auto signal generation + execution (OR breakout)
 5. 4:05 PM ET - Daily P&L logging
+6. Sunday 7:00 PM ET - Weekly database cleanup
 """
 import logging
 from datetime import datetime, timedelta
@@ -198,7 +199,8 @@ async def job_auto_execute_orb():
     
     # Check market is open today
     calendar = get_market_calendar()
-    if not calendar.is_market_open_today():
+    today = datetime.now(ET).date()
+    if not calendar.is_trading_day(today):
         logger.info("📅 Market closed today - skipping auto-execution")
         return {"status": "skipped", "reason": "market_closed"}
     
@@ -321,6 +323,66 @@ async def job_daily_summary():
         raise
 
 
+async def job_weekly_cleanup():
+    """
+    Sunday 7:00 PM ET - Weekly database cleanup.
+    
+    Removes old data to prevent database bloat:
+    - DailyBar: Keep 30 days
+    - SimulatedTrade: Keep 90 days
+    - OpeningRange: Keep 30 days
+    """
+    from db.database import SessionLocal
+    from db.models import DailyBar, SimulatedTrade, OpeningRange
+    from sqlalchemy import delete
+    
+    logger.info("🧹 WEEKLY CLEANUP triggered at 7:00 PM ET (Sunday)")
+    
+    db = SessionLocal()
+    results = {}
+    
+    try:
+        now = datetime.now(ET)
+        
+        # 1. Delete DailyBar older than 30 days
+        cutoff_30 = now - timedelta(days=30)
+        daily_deleted = db.execute(
+            delete(DailyBar).where(DailyBar.date < cutoff_30)
+        ).rowcount
+        results["daily_bars"] = daily_deleted
+        logger.info(f"  📉 Deleted {daily_deleted} DailyBar records (>30 days)")
+        
+        # 2. Delete SimulatedTrade older than 90 days
+        cutoff_90 = now - timedelta(days=90)
+        trades_deleted = db.execute(
+            delete(SimulatedTrade).where(SimulatedTrade.trade_date < cutoff_90.date())
+        ).rowcount
+        results["simulated_trades"] = trades_deleted
+        logger.info(f"  📊 Deleted {trades_deleted} SimulatedTrade records (>90 days)")
+        
+        # 3. Delete OpeningRange older than 30 days
+        ranges_deleted = db.execute(
+            delete(OpeningRange).where(OpeningRange.date < cutoff_30.date())
+        ).rowcount
+        results["opening_ranges"] = ranges_deleted
+        logger.info(f"  📈 Deleted {ranges_deleted} OpeningRange records (>30 days)")
+        
+        db.commit()
+        
+        total = daily_deleted + trades_deleted + ranges_deleted
+        logger.info(f"✅ Weekly cleanup complete: {total} total records deleted")
+        
+        return {"status": "success", "deleted": results, "total": total}
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Weekly cleanup failed: {e}", exc_info=True)
+        raise
+    
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """
     Start the EOD scheduler with all jobs.
@@ -438,6 +500,21 @@ def start_scheduler():
         replace_existing=True,
     )
     logger.info("📅 Scheduled: Daily summary at 4:05 PM ET (Mon-Fri)")
+    
+    # Job 4: Weekly database cleanup at 7:00 PM ET (Sunday)
+    scheduler.add_job(
+        job_weekly_cleanup,
+        CronTrigger(
+            hour=19,
+            minute=0,
+            day_of_week="sun",
+            timezone=ET,
+        ),
+        id="weekly_cleanup",
+        name="Weekly Database Cleanup",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Weekly cleanup at 7:00 PM ET (Sunday)")
     
     # Start the scheduler
     scheduler.start()

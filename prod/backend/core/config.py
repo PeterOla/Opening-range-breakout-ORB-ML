@@ -36,8 +36,6 @@ class Settings(BaseSettings):
     
     # Risk Management
     DAILY_LOSS_LIMIT_PCT: float = 0.10    # 10% daily loss limit (kill switch)
-    FIXED_LEVERAGE: float = 4.0           # 4x intraday margin
-    DAILY_RISK_PCT: float = 0.10          # 10% daily risk target
     
     # System
     KILL_SWITCH_FILE: str = ".stop_trading"

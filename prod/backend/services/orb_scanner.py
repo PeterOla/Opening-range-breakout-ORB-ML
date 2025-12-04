@@ -260,19 +260,32 @@ async def scan_orb_candidates(
         db.close()
 
 
-async def get_todays_candidates(top_n: int = 20) -> list[dict]:
+async def get_todays_candidates(top_n: int = 20, direction: str = "both") -> list[dict]:
     """
     Get today's top N candidates from database (if already scanned).
+    
+    Args:
+        top_n: Maximum number of candidates to return
+        direction: Filter by direction - 'long', 'short', or 'both'
     """
     db = SessionLocal()
     today = datetime.now(ET).date()
     
     try:
+        # Build base query
+        filters = [
+            OpeningRange.date == today,
+            OpeningRange.passed_filters == True,
+        ]
+        
+        # Add direction filter if not 'both'
+        if direction == "long":
+            filters.append(OpeningRange.direction == 1)
+        elif direction == "short":
+            filters.append(OpeningRange.direction == -1)
+        
         candidates = db.query(OpeningRange).filter(
-            and_(
-                OpeningRange.date == today,
-                OpeningRange.passed_filters == True,
-            )
+            and_(*filters)
         ).order_by(OpeningRange.rank.asc()).limit(top_n).all()
         
         return [

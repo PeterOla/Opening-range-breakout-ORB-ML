@@ -138,6 +138,7 @@ def generate_signals_from_candidates(
             # Save to database
             if save_to_db and db:
                 db_signal = Signal(
+                    signal_date=datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0),
                     timestamp=datetime.now(ET),
                     ticker=symbol,
                     side=side,

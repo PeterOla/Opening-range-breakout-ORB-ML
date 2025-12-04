@@ -4,6 +4,7 @@ Applies pre-filters before detailed scanning.
 """
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 import pandas as pd
 from alpaca.trading.client import TradingClient
@@ -15,6 +16,9 @@ from alpaca.trading.requests import GetAssetsRequest
 from alpaca.trading.enums import AssetClass, AssetStatus
 
 from core.config import settings
+
+# Local cache directory for 5-min bars (only used in local dev)
+INTRADAY_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "data" / "intraday_cache"
 
 
 def get_trading_client() -> TradingClient:
@@ -163,6 +167,83 @@ async def fetch_daily_bars(
     return all_bars
 
 
+def _get_cache_path(target_date: datetime) -> Path:
+    """Get cache file path for a specific date."""
+    date_str = target_date.strftime("%Y-%m-%d")
+    return INTRADAY_CACHE_DIR / f"{date_str}.parquet"
+
+
+def _load_cached_bars(target_date: datetime) -> Optional[dict[str, pd.DataFrame]]:
+    """
+    Load 5-min bars from local Parquet cache if available.
+    Only loads bars for the specific target date.
+    Returns None if cache doesn't exist or we're on cloud (no local storage).
+    """
+    cache_path = _get_cache_path(target_date)
+    
+    # Check if cache directory exists (local dev only)
+    if not INTRADAY_CACHE_DIR.exists():
+        return None
+    
+    if not cache_path.exists():
+        return None
+    
+    try:
+        df = pd.read_parquet(cache_path)
+        
+        # Convert back to dict of DataFrames per symbol
+        result = {}
+        for symbol in df["symbol"].unique():
+            sym_df = df[df["symbol"] == symbol].drop(columns=["symbol"]).reset_index(drop=True)
+            result[symbol] = sym_df
+        
+        print(f"[Cache] ✅ Loaded {len(result)} symbols from cache for {target_date.strftime('%Y-%m-%d')}")
+        return result
+    except Exception as e:
+        print(f"[Cache] ⚠️ Failed to load cache: {e}")
+        return None
+
+
+def _save_bars_to_cache(bars: dict[str, pd.DataFrame], target_date: datetime) -> None:
+    """
+    Save 5-min bars to local Parquet cache.
+    Only saves bars for the specific target date (filters out other days).
+    """
+    try:
+        # Create cache directory if it doesn't exist
+        INTRADAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        target_date_only = target_date.date() if hasattr(target_date, 'date') else target_date
+        
+        # Combine all DataFrames with symbol column, filtering to target date only
+        dfs = []
+        for symbol, df in bars.items():
+            df_copy = df.copy()
+            
+            # Filter to only target date's bars
+            if "timestamp" in df_copy.columns:
+                df_copy["bar_date"] = pd.to_datetime(df_copy["timestamp"]).dt.date
+                df_copy = df_copy[df_copy["bar_date"] == target_date_only]
+                df_copy = df_copy.drop(columns=["bar_date"])
+            
+            if not df_copy.empty:
+                df_copy["symbol"] = symbol
+                dfs.append(df_copy)
+        
+        if not dfs:
+            print(f"[Cache] ⚠️ No bars for target date {target_date_only}")
+            return
+        
+        combined = pd.concat(dfs, ignore_index=True)
+        cache_path = _get_cache_path(target_date)
+        combined.to_parquet(cache_path, index=False)
+        
+        print(f"[Cache] 💾 Saved {len(dfs)} symbols to cache for {target_date.strftime('%Y-%m-%d')}")
+    except Exception as e:
+        # Silently fail on cloud (no local storage)
+        print(f"[Cache] ⚠️ Could not save cache (expected on cloud): {e}")
+
+
 async def fetch_5min_bars(
     symbols: list[str],
     lookback_days: int = 1,
@@ -172,6 +253,9 @@ async def fetch_5min_bars(
     """
     Fetch 5-minute OHLCV bars for opening range calculation.
     Returns dict of symbol -> DataFrame with 5min bars.
+    
+    Uses local Parquet cache when available (dev mode).
+    Falls back to Alpaca API on cloud or cache miss.
     
     Args:
         symbols: List of ticker symbols
@@ -185,6 +269,18 @@ async def fetch_5min_bars(
     """
     if not symbols:
         return {}
+    
+    # Try loading from cache first (for historical dates only)
+    if target_date is not None:
+        cached = _load_cached_bars(target_date)
+        if cached:
+            # Filter to only requested symbols
+            filtered = {s: cached[s] for s in symbols if s in cached}
+            if len(filtered) >= len(symbols) * 0.9:  # 90% cache hit is good enough
+                print(f"[Cache] Using cached data ({len(filtered)}/{len(symbols)} symbols)")
+                return filtered
+            else:
+                print(f"[Cache] Partial hit ({len(filtered)}/{len(symbols)}), fetching all from API")
     
     client = get_data_client()
     
@@ -251,6 +347,11 @@ async def fetch_5min_bars(
             print(f"   Fetched {fetched_so_far}/{len(symbols)} symbols...")
     
     print(f"[fetch_5min_bars] Got bars for {len(all_bars)} symbols")
+    
+    # Save to cache for future use (historical dates only)
+    if target_date is not None and all_bars:
+        _save_bars_to_cache(all_bars, target_date)
+    
     return all_bars
 
 
