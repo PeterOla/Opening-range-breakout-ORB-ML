@@ -7,7 +7,7 @@ Shows hypothetical P&L based on entry/stop/EOD exit rules.
 Data flow:
 1. Check opening_ranges table for cached data
 2. If not found, calculate from scratch:
-   - Daily bars from DB (Polygon) for ATR, avg_volume
+   - Daily bars from DB (Local Parquet) for ATR, avg_volume
    - 5-min bars from Alpaca for OR and intraday simulation
 """
 import json
@@ -380,8 +380,18 @@ async def get_historical_top20_stream(
     try:
         target = datetime.strptime(target_date, "%Y-%m-%d").date()
         target_dt = datetime.combine(target, time(0, 0))
+        now_et = datetime.now(ET)
+        today = now_et.date()
         
         logger.info(f"[SSE] Streaming request for {target_date}")
+        
+        # If requesting today and ORB hasn't formed yet, show pre-market view
+        or_end_time = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+        if target == today and now_et < or_end_time:
+            logger.info(f"[SSE] Today requested before ORB formed - returning premarket view")
+            premarket_result = await get_premarket_candidates()
+            yield sse_event("result", premarket_result)
+            return
         
         # Step 1: Check cache (skip if force_refresh)
         if force_refresh:
@@ -405,9 +415,12 @@ async def get_historical_top20_stream(
             })
         
         # First check ScannerCache for "no data" days (holidays, etc.)
-        cache_entry = db.query(ScannerCache).filter(
-            func.date(ScannerCache.scan_date) == target
-        ).first() if not force_refresh else None
+        # Skip cache for today - it may have stale 'no_candidates' from before ORB formed
+        cache_entry = None
+        if not force_refresh and target != today:
+            cache_entry = db.query(ScannerCache).filter(
+                func.date(ScannerCache.scan_date) == target
+            ).first()
         
         if cache_entry and cache_entry.status in ('no_data', 'holiday', 'no_candidates'):
             logger.info(f"[SSE] Cache hit: {cache_entry.status} for {target_date}")
@@ -1297,7 +1310,7 @@ async def get_premarket_candidates() -> dict:
         mins_remaining = minutes_until % 60
         
         # Get universe from data_sync (filtered by ATR, volume, price)
-        universe = await get_universe_with_metrics(db, today)
+        universe = get_universe_with_metrics(db=db)
         
         if not universe:
             return {
@@ -1308,19 +1321,15 @@ async def get_premarket_candidates() -> dict:
         
         # Build candidate list (sorted by avg_volume as proxy until we have RVOL)
         candidates = []
-        for ticker, metrics in universe.items():
-            # Apply same filters as historical scanner
-            if metrics.get("avg_volume_20", 0) < MIN_AVG_VOLUME:
-                continue
-            if metrics.get("atr_14", 0) < MIN_ATR:
-                continue
-            # Note: Can't filter by opening price yet - no OR data
+        for stock in universe:
+            # Universe already filtered by get_universe_with_metrics
+            # Each stock has: symbol, date, close, atr_14, avg_volume_14
             
             candidates.append({
-                "symbol": ticker,
-                "atr": round(metrics.get("atr_14", 0), 2),
-                "avg_volume": int(metrics.get("avg_volume_20", 0)),
-                "last_close": round(metrics.get("last_close", 0), 2),
+                "symbol": stock["symbol"],
+                "atr": round(stock.get("atr_14", 0), 2),
+                "avg_volume": int(stock.get("avg_volume_14", 0)),
+                "last_close": round(stock.get("close", 0), 2),
                 # RVOL will be calculated once pre-market volume comes in
                 "rvol": None,  
                 "status": "awaiting_rvol",

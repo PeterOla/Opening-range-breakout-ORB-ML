@@ -9,6 +9,7 @@ from typing import Optional
 import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
+from data_access.historical import query_symbol_range, list_available_symbols
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
@@ -90,7 +91,7 @@ async def fetch_snapshots_batch(symbols: list[str]) -> dict:
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i + batch_size]
         try:
-            request = StockSnapshotRequest(symbol_or_symbols=batch, feed=DataFeed.IEX)
+            request = StockSnapshotRequest(symbol_or_symbols=batch, feed=DataFeed.SIP)
             snapshots = client.get_stock_snapshot(request)
             
             for sym, snap in snapshots.items():
@@ -139,7 +140,7 @@ async def fetch_daily_bars(
                 timeframe=TimeFrame.Day,
                 start=start_date,
                 end=end_date,
-                feed=DataFeed.IEX,
+                feed=DataFeed.SIP,
             )
             bars = client.get_stock_bars(request)
             
@@ -270,17 +271,32 @@ async def fetch_5min_bars(
     if not symbols:
         return {}
     
-    # Try loading from cache first (for historical dates only)
+    # Try DuckDB/Parquet first when target_date is provided (local development).
     if target_date is not None:
-        cached = _load_cached_bars(target_date)
-        if cached:
-            # Filter to only requested symbols
-            filtered = {s: cached[s] for s in symbols if s in cached}
-            if len(filtered) >= len(symbols) * 0.9:  # 90% cache hit is good enough
-                print(f"[Cache] Using cached data ({len(filtered)}/{len(symbols)} symbols)")
-                return filtered
-            else:
-                print(f"[Cache] Partial hit ({len(filtered)}/{len(symbols)}), fetching all from API")
+        try:
+            # Check which symbols we have parquet for to avoid expensive queries
+            parquet_symbols = list_available_symbols()
+            matched = [s for s in symbols if s in parquet_symbols]
+            parquet_bars = {}
+            for s in matched:
+                # Query full day and then filter to 5-min interval when needed
+                df = query_symbol_range(s, start_ts=target_date.replace(hour=0, minute=0, second=0), end_ts=target_date.replace(hour=23, minute=59, second=59))
+                if not df.empty:
+                    # normalise column name to timestamp expected by rest of code
+                    if 'ts' in df.columns and 'timestamp' not in df.columns:
+                        df = df.rename(columns={'ts': 'timestamp'})
+                    parquet_bars[s] = df
+
+            if parquet_bars:
+                filtered = {s: parquet_bars[s] for s in symbols if s in parquet_bars}
+                if len(filtered) >= max(1, int(len(symbols) * 0.9)):
+                    print(f"[Parquet] Using parquet data ({len(filtered)}/{len(symbols)} symbols)")
+                    return filtered
+                else:
+                    print(f"[Parquet] Partial hit ({len(filtered)}/{len(symbols)}), fetching rest from API")
+                    # continue and fetch the rest from API later
+        except Exception as e:
+            print(f"[Parquet] Error attempting to load parquet data: {e}")
     
     client = get_data_client()
     
@@ -292,14 +308,6 @@ async def fetch_5min_bars(
         end_date = target_date + timedelta(days=1)
     
     start_date = end_date - timedelta(days=lookback_days + 1)
-    
-    # Check if we're querying recent data (within last 15 minutes)
-    # Free tier SIP has 15-min delay; recent data will fail
-    now = datetime.now(end_date.tzinfo) if end_date.tzinfo else datetime.now()
-    is_recent_data = end_date > now - timedelta(minutes=15)
-    
-    if is_recent_data:
-        print(f"[fetch_5min_bars] ⚠️ WARNING: Querying recent data - may fail on free tier")
     
     print(f"[fetch_5min_bars] Fetching {len(symbols)} symbols from {start_date} to {end_date}")
     

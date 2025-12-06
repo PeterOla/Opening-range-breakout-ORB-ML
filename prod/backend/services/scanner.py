@@ -192,8 +192,10 @@ async def scan_universe(
     
     # Step 5: Fetch 5min bars for opening range
     filtered_symbols = [s["symbol"] for s in atr_vol_filtered]
-    print(f"Fetching 5min bars for {len(filtered_symbols)} symbols...")
-    fivemin_bars = await fetch_5min_bars(filtered_symbols, lookback_days=1)
+    print(f"Fetching 5min bars for {len(filtered_symbols)} symbols (prefer local parquet when available)...")
+    # For pre-market or testing, prefer local parquet (DuckDB) by using today's date
+    target_dt = datetime.combine(datetime.now(ET).date(), time(0, 0))
+    fivemin_bars = await fetch_5min_bars(filtered_symbols, lookback_days=1, target_date=target_dt)
     print(f"Got 5min bars for {len(fivemin_bars)} symbols")
     
     # Step 6: Calculate opening range and RVOL

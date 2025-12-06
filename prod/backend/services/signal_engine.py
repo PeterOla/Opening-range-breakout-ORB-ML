@@ -11,7 +11,7 @@ from datetime import datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
 from db.database import SessionLocal
 from db.models import Signal, OpeningRange, OrderSide, OrderStatus
@@ -29,11 +29,14 @@ def calculate_position_size(
     max_position_value: Optional[float] = None,
 ) -> int:
     """
-    Calculate position size based on risk management rules.
+    Calculate position size based on RISK (matching backtest logic).
+    
+    Position sized so that if stopped out, you lose exactly risk_per_trade_pct of equity.
+    Stop loss is at 10% ATR distance from entry (per strategy document).
     
     Args:
         entry_price: Expected entry price
-        stop_price: Stop loss price
+        stop_price: Stop loss price (10% ATR from entry)
         account_equity: Total account equity
         risk_per_trade_pct: Risk per trade as decimal (0.01 = 1%)
         max_position_value: Maximum position value (optional)
@@ -41,16 +44,19 @@ def calculate_position_size(
     Returns:
         Number of shares to trade
     """
-    # Calculate risk per share
+    if entry_price <= 0:
+        return 0
+    
+    # Risk per share = distance to stop
     risk_per_share = abs(entry_price - stop_price)
     
     if risk_per_share <= 0:
         return 0
     
-    # Calculate dollar risk
+    # Dollar risk = percentage of equity
     dollar_risk = account_equity * risk_per_trade_pct
     
-    # Calculate shares based on risk
+    # Shares sized so max loss = dollar_risk
     shares = int(dollar_risk / risk_per_share)
     
     # Apply max position value constraint if provided
@@ -64,6 +70,7 @@ def calculate_position_size(
 def generate_signals_from_candidates(
     candidates: list[dict],
     account_equity: float,
+    buying_power: float = None,
     risk_per_trade_pct: float = None,
     max_positions: int = None,
     save_to_db: bool = True,
@@ -74,6 +81,7 @@ def generate_signals_from_candidates(
     Args:
         candidates: List of candidates from orb_scanner.scan_orb_candidates()
         account_equity: Current account equity for position sizing
+        buying_power: Available buying power (defaults to equity if not provided)
         risk_per_trade_pct: Risk per trade (defaults to strategy config)
         max_positions: Maximum number of signals to generate (defaults to strategy config)
         save_to_db: Whether to save signals to database
@@ -90,15 +98,37 @@ def generate_signals_from_candidates(
     if max_positions is None:
         max_positions = strategy["top_n"]
     
+    # Default buying power to equity if not provided
+    if buying_power is None:
+        buying_power = account_equity
+    
+    # Calculate max position value per trade based on buying power
+    # Each position gets equal share of buying power
+    max_position_value = buying_power / max_positions
+    
     db = SessionLocal() if save_to_db else None
     signals = []
     
     try:
+        # Check for existing signals today to prevent duplicates
+        existing_symbols = set()
+        if db:
+            today = datetime.now(ET).date()
+            existing = db.query(Signal).filter(
+                func.date(Signal.signal_date) == today
+            ).all()
+            existing_symbols = {s.ticker for s in existing}
+        
         # Take only top N candidates
         top_candidates = candidates[:max_positions]
         
         for candidate in top_candidates:
             symbol = candidate["symbol"]
+            
+            # Skip if signal already exists for this symbol today
+            if symbol in existing_symbols:
+                continue
+            
             direction = candidate["direction"]
             entry_price = candidate["entry_price"]
             stop_price = candidate["stop_price"]
@@ -106,12 +136,13 @@ def generate_signals_from_candidates(
             # Determine side
             side = OrderSide.LONG if direction == 1 else OrderSide.SHORT
             
-            # Calculate position size
+            # Calculate position size with buying power constraint
             shares = calculate_position_size(
                 entry_price=entry_price,
                 stop_price=stop_price,
                 account_equity=account_equity,
                 risk_per_trade_pct=risk_per_trade_pct,
+                max_position_value=max_position_value,
             )
             
             if shares <= 0:
@@ -205,11 +236,14 @@ async def run_signal_generation(
     strategy = get_strategy_config()
     
     try:
-        # Auto-fetch equity from Alpaca if not provided
+        # Auto-fetch equity and buying power from Alpaca if not provided
+        executor = get_executor()
+        account = executor.get_account()
+        
         if account_equity is None:
-            executor = get_executor()
-            account = executor.get_account()
             account_equity = float(account.get("equity", 10000))
+        
+        buying_power = float(account.get("buying_power", account_equity))
         
         # Apply strategy defaults
         top_n = max_positions or strategy["top_n"]
@@ -226,10 +260,11 @@ async def run_signal_generation(
                 "signals": [],
             }
         
-        # Generate signals using strategy config
+        # Generate signals using strategy config with buying power constraint
         signals = generate_signals_from_candidates(
             candidates=candidates,
             account_equity=account_equity,
+            buying_power=buying_power,
             risk_per_trade_pct=risk_pct,
             max_positions=top_n,
             save_to_db=True,

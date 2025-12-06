@@ -19,6 +19,8 @@ httpx>=0.25.0
 # Data Processing
 pandas>=2.1.3
 numpy>=1.26.2
+duckdb>=1.1.0
+pyarrow>=12.0.1
 
 # Environment & Config
 python-dotenv>=1.0.0

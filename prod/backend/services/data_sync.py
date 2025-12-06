@@ -1,11 +1,11 @@
 """
 Data synchronisation service.
 
-- Nightly job: Fetch 14-day daily bars from Polygon → daily_bars table
+- Nightly job: Load daily bars from local Parquet files → daily_bars table
 - Calculate ATR(14) and avg_volume(14) for each symbol
 - Delete bars older than 30 days
 
-Uses grouped daily endpoint for efficiency (1 call = all stocks for 1 day).
+Reads from: data/processed/daily/*.parquet
 """
 from datetime import datetime, timedelta
 from typing import Optional
@@ -14,27 +14,76 @@ import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, delete
 import asyncio
+import os
+from pathlib import Path
+
+from alpaca.trading.requests import GetCalendarRequest
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from execution.alpaca_client import get_alpaca_client, get_data_client
 
 from db.database import SessionLocal
 from db.models import DailyBar, Ticker
-from services.polygon_client import get_polygon_client
-
 
 ET = ZoneInfo("America/New_York")
 
-
 def get_trading_days(start_date: datetime, end_date: datetime) -> list[datetime]:
     """
-    Get list of trading days (weekdays only, excludes weekends).
-    Does not account for market holidays - Polygon returns empty for non-trading days.
+    Get list of trading days using Alpaca calendar.
     """
-    days = []
-    current = start_date
-    while current <= end_date:
-        if current.weekday() < 5:  # Mon=0, Fri=4
-            days.append(current)
-        current += timedelta(days=1)
-    return days
+    try:
+        client = get_alpaca_client()
+        # Ensure we pass date objects
+        s = start_date.date() if isinstance(start_date, datetime) else start_date
+        e = end_date.date() if isinstance(end_date, datetime) else end_date
+        
+        request = GetCalendarRequest(start=s, end=e)
+        calendar = client.get_calendar(request)
+        
+        days = []
+        for cal in calendar:
+            d = cal.date
+            # Convert to datetime at midnight to match expected interface
+            dt = datetime.combine(d, datetime.min.time())
+            days.append(dt)
+        return days
+    except Exception as e:
+        print(f"Error fetching calendar: {e}")
+        # Fallback to simple weekday check
+        days = []
+        current = start_date
+        while current <= end_date:
+            if current.weekday() < 5:
+                days.append(current)
+            current += timedelta(days=1)
+        return days
+
+def get_data_dir() -> Path:
+    """
+    Resolve the data directory path.
+    Assumes structure:
+    root/
+      data/
+        processed/
+          daily/
+      prod/
+        backend/
+    """
+    # Start from current file location
+    current_file = Path(__file__).resolve()
+    # Go up to prod/backend/services -> prod/backend -> prod -> root
+    root_dir = current_file.parent.parent.parent.parent
+    data_dir = root_dir / "data" / "processed" / "daily"
+    
+    if not data_dir.exists():
+        # Fallback: try relative to CWD if running from root
+        cwd_data = Path("data/processed/daily")
+        if cwd_data.exists():
+            return cwd_data.resolve()
+            
+    return data_dir
+
+
 
 
 def compute_atr(bars: list[dict], period: int = 14) -> Optional[float]:
@@ -74,198 +123,139 @@ def compute_avg_volume(bars: list[dict], period: int = 14) -> Optional[float]:
     return float(latest) if pd.notna(latest) else None
 
 
-async def sync_daily_bars_for_symbol(
-    symbol: str,
-    lookback_days: int = 30,
-    db: Optional[Session] = None,
-) -> int:
+async def sync_daily_bars_from_parquet(lookback_days: int = 30) -> dict:
     """
-    Sync daily bars for a single symbol from Polygon to database.
-    
-    Returns:
-        Number of bars synced
-    """
-    close_session = False
-    if db is None:
-        db = SessionLocal()
-        close_session = True
-    
-    try:
-        client = get_polygon_client()
-        
-        end_date = datetime.now(ET)
-        start_date = end_date - timedelta(days=lookback_days + 10)  # Buffer for weekends
-        
-        bars = await client.get_daily_bars(symbol, start_date, end_date)
-        
-        if not bars:
-            return 0
-        
-        # Compute metrics
-        atr_14 = compute_atr(bars, 14)
-        avg_vol_14 = compute_avg_volume(bars, 14)
-        
-        # Delete existing bars for this symbol within date range
-        db.execute(
-            delete(DailyBar).where(
-                and_(
-                    DailyBar.symbol == symbol,
-                    DailyBar.date >= start_date,
-                )
-            )
-        )
-        
-        # Insert new bars
-        for bar in bars:
-            db_bar = DailyBar(
-                symbol=symbol,
-                date=bar["timestamp"],
-                open=bar["open"],
-                high=bar["high"],
-                low=bar["low"],
-                close=bar["close"],
-                volume=bar["volume"],
-                vwap=bar.get("vwap"),
-                atr_14=atr_14 if bar == bars[-1] else None,  # Only store on latest
-                avg_volume_14=avg_vol_14 if bar == bars[-1] else None,
-            )
-            db.add(db_bar)
-        
-        db.commit()
-        return len(bars)
-    
-    except Exception as e:
-        db.rollback()
-        print(f"Error syncing {symbol}: {e}")
-        return 0
-    
-    finally:
-        if close_session:
-            db.close()
-
-
-async def sync_universe_daily_bars(
-    symbols: list[str],
-    lookback_days: int = 30,
-) -> dict:
-    """
-    Sync daily bars for entire universe from Polygon.
-    Uses grouped daily endpoint for efficiency (1 API call = all stocks for 1 day).
-    
-    For 14-day lookback: ~20 API calls (14 weekdays + buffer for holidays)
-    Much more efficient than per-symbol calls (1 call per symbol per day).
+    Sync daily bars from local Parquet files to database.
     
     Returns:
         Dict with sync stats
     """
     db = SessionLocal()
-    client = get_polygon_client()
     
     try:
-        end_date = datetime.now(ET).date()
-        start_date = end_date - timedelta(days=lookback_days)
+        data_dir = get_data_dir()
+        if not data_dir.exists():
+            return {"status": "error", "error": f"Data directory not found: {data_dir}"}
+            
+        parquet_files = list(data_dir.glob("*.parquet"))
+        if not parquet_files:
+            return {"status": "error", "error": f"No parquet files found in {data_dir}"}
+            
+        print(f"Found {len(parquet_files)} parquet files in {data_dir}")
         
-        # Get trading days only
-        trading_days = get_trading_days(
-            datetime.combine(start_date, datetime.min.time()),
-            datetime.combine(end_date, datetime.min.time())
+        # Get active tickers to filter (optional, but good for performance)
+        active_symbols = set(
+            row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()
         )
         
-        synced = 0
-        failed = 0
-        symbols_set = set(symbols)  # Fast lookup
-        
-        print(f"Syncing {len(trading_days)} trading days for {len(symbols)} symbols...")
-        
-        for i, day in enumerate(trading_days):
-            print(f"[{i+1}/{len(trading_days)}] Fetching grouped daily for {day.strftime('%Y-%m-%d')}...")
-            
-            try:
-                grouped = await client.get_grouped_daily(day)
+        files_to_process = []
+        for p in parquet_files:
+            sym = p.stem  # filename without extension
+            if not active_symbols or sym in active_symbols:
+                files_to_process.append(p)
                 
-                if not grouped:
-                    print(f"  No data for {day.strftime('%Y-%m-%d')} (likely holiday)")
+        print(f"Syncing {len(files_to_process)} symbols from parquet...")
+        
+        cutoff_date = datetime.now(ET) - timedelta(days=lookback_days + 20) # Buffer
+        
+        synced_count = 0
+        metrics_updated = 0
+        
+        for i, p_file in enumerate(files_to_process):
+            symbol = p_file.stem
+            if i % 100 == 0:
+                print(f"Processing {i}/{len(files_to_process)}: {symbol}")
+                
+            try:
+                df = pd.read_parquet(p_file)
+                
+                # Ensure columns exist
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                if not all(col in df.columns for col in required_cols):
+                    print(f"Skipping {symbol}: missing columns")
                     continue
                 
-                day_synced = 0
+                # Handle index as date if needed, or 'date' column
+                if 'date' in df.columns:
+                    df['timestamp'] = pd.to_datetime(df['date'])
+                elif isinstance(df.index, pd.DatetimeIndex):
+                    df['timestamp'] = df.index
+                else:
+                    # Try to find a date column
+                    print(f"Skipping {symbol}: no date column")
+                    continue
                 
-                # Filter to our symbols and insert
-                for symbol in symbols_set:
-                    if symbol in grouped:
-                        bar = grouped[symbol]
-                        bar_date = bar["timestamp"].date() if hasattr(bar["timestamp"], 'date') else bar["timestamp"]
-                        
-                        # Check if already exists
-                        existing = db.query(DailyBar).filter(
-                            and_(
-                                DailyBar.symbol == symbol,
-                                DailyBar.date == bar_date,
-                            )
-                        ).first()
-                        
-                        if not existing:
-                            db_bar = DailyBar(
-                                symbol=symbol,
-                                date=bar["timestamp"],
-                                open=bar["open"],
-                                high=bar["high"],
-                                low=bar["low"],
-                                close=bar["close"],
-                                volume=bar["volume"],
-                                vwap=bar.get("vwap"),
-                            )
-                            db.add(db_bar)
-                            day_synced += 1
+                # Filter by date
+                df = df[df['timestamp'] >= cutoff_date.replace(tzinfo=None)]
                 
-                db.commit()
-                synced += day_synced
-                print(f"  ✓ Synced {day_synced} bars")
+                if df.empty:
+                    continue
                 
+                # Convert to list of dicts for processing
+                bars = []
+                for _, row in df.iterrows():
+                    bars.append({
+                        "timestamp": row['timestamp'],
+                        "open": row['open'],
+                        "high": row['high'],
+                        "low": row['low'],
+                        "close": row['close'],
+                        "volume": row['volume'],
+                        "vwap": row.get('vwap')
+                    })
+                
+                # Compute metrics
+                atr_14 = compute_atr(bars, 14)
+                avg_vol_14 = compute_avg_volume(bars, 14)
+                
+                # Upsert to DB
+                # First delete existing in range to avoid duplicates/conflicts
+                min_date = df['timestamp'].min()
+                db.execute(
+                    delete(DailyBar).where(
+                        and_(
+                            DailyBar.symbol == symbol,
+                            DailyBar.date >= min_date
+                        )
+                    )
+                )
+                
+                for bar in bars:
+                    is_latest = (bar == bars[-1])
+                    db_bar = DailyBar(
+                        symbol=symbol,
+                        date=bar["timestamp"],
+                        open=bar["open"],
+                        high=bar["high"],
+                        low=bar["low"],
+                        close=bar["close"],
+                        volume=bar["volume"],
+                        vwap=bar.get("vwap"),
+                        atr_14=atr_14 if is_latest else None,
+                        avg_volume_14=avg_vol_14 if is_latest else None
+                    )
+                    db.add(db_bar)
+                
+                synced_count += len(bars)
+                if atr_14 is not None:
+                    metrics_updated += 1
+                    
+                # Commit every 10 symbols
+                if i % 10 == 0:
+                    db.commit()
+                    
             except Exception as e:
-                print(f"  ✗ Error fetching {day.strftime('%Y-%m-%d')}: {e}")
-                failed += 1
-            
-            # Rate limit: Polygon free tier = 5 calls/min
-            # 12 seconds between calls keeps us safe
-            if i < len(trading_days) - 1:
-                await asyncio.sleep(12)
-        
-        # Now compute ATR and avg_volume for each symbol
-        print("\nComputing ATR(14) and avg_volume(14) for all symbols...")
-        updated_count = 0
-        
-        for symbol in symbols:
-            bars = db.query(DailyBar).filter(
-                DailyBar.symbol == symbol
-            ).order_by(DailyBar.date.asc()).all()
-            
-            if len(bars) >= 14:
-                bar_dicts = [
-                    {"timestamp": b.date, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
-                    for b in bars
-                ]
-                
-                atr_14 = compute_atr(bar_dicts, 14)
-                avg_vol_14 = compute_avg_volume(bar_dicts, 14)
-                
-                # Update latest bar with computed metrics
-                if bars:
-                    bars[-1].atr_14 = atr_14
-                    bars[-1].avg_volume_14 = avg_vol_14
-                    updated_count += 1
+                print(f"Error processing {symbol}: {e}")
+                db.rollback()
         
         db.commit()
-        print(f"  ✓ Updated metrics for {updated_count} symbols")
-        
         return {
             "status": "success",
-            "symbols_requested": len(symbols),
-            "bars_synced": synced,
-            "days_processed": len(trading_days),
-            "days_failed": failed,
-            "metrics_updated": updated_count,
+            "symbols_processed": len(files_to_process),
+            "bars_synced": synced_count,
+            "metrics_updated": metrics_updated
         }
-    
+        
     except Exception as e:
         db.rollback()
         return {"status": "error", "error": str(e)}
@@ -274,148 +264,121 @@ async def sync_universe_daily_bars(
         db.close()
 
 
-async def sync_daily_bars_fast(lookback_days: int = 14) -> dict:
+async def sync_daily_bars_from_alpaca(symbols: Optional[list[str]] = None, lookback_days: int = 14) -> dict:
     """
-    Fast sync: Fetch grouped daily bars for ALL stocks, then filter to active universe.
-    
-    This is the most efficient approach for syncing the entire universe:
-    - 1 API call per day (not 1 per symbol)
-    - For 14 days = ~20 API calls total
-    - Only stores bars for active tickers in database
-    
-    Use this for the nightly sync job.
-    
-    Returns:
-        Dict with sync stats
+    Sync daily bars from Alpaca for active tickers.
+    If symbols provided, syncs only those. Otherwise syncs all active tickers.
     """
     db = SessionLocal()
-    client = get_polygon_client()
+    data_client = get_data_client()
     
     try:
-        # Get active ticker symbols for filtering
-        active_symbols = set(
-            row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()
-        )
+        if symbols:
+            active_symbols = symbols
+        else:
+            # Get active tickers
+            active_symbols = [
+                row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()
+            ]
         
         if not active_symbols:
-            return {"status": "error", "error": "No active tickers. Run ticker sync first."}
+            return {"status": "error", "error": "No active tickers"}
+            
+        print(f"Syncing bars for {len(active_symbols)} tickers from Alpaca...")
         
-        print(f"Syncing bars for {len(active_symbols)} active tickers...")
+        end_dt = datetime.now(ET)
+        start_dt = end_dt - timedelta(days=lookback_days + 5) # Buffer
         
-        end_date = datetime.now(ET).date()
-        start_date = end_date - timedelta(days=lookback_days + 7)  # Buffer for weekends/holidays
-        
-        trading_days = get_trading_days(
-            datetime.combine(start_date, datetime.min.time()),
-            datetime.combine(end_date, datetime.min.time())
-        )
-        
+        # Chunk symbols to avoid huge requests
+        chunk_size = 100
         total_synced = 0
-        days_processed = 0
-        days_failed = 0
-        symbols_seen = set()
+        metrics_updated = 0
         
-        print(f"Fast sync: {len(trading_days)} trading days...")
-        
-        for i, day in enumerate(trading_days):
-            print(f"[{i+1}/{len(trading_days)}] {day.strftime('%Y-%m-%d')}...", end=" ")
+        for i in range(0, len(active_symbols), chunk_size):
+            chunk = active_symbols[i:i+chunk_size]
+            print(f"Fetching chunk {i//chunk_size + 1}/{(len(active_symbols)-1)//chunk_size + 1} ({len(chunk)} symbols)...")
             
             try:
-                grouped = await client.get_grouped_daily(day)
+                request = StockBarsRequest(
+                    symbol_or_symbols=chunk,
+                    timeframe=TimeFrame.Day,
+                    start=start_dt,
+                    end=end_dt,
+                    adjustment='all'
+                )
                 
-                if not grouped:
-                    print("(no data - holiday?)")
-                    continue
+                bars_map = data_client.get_stock_bars(request)
                 
-                day_synced = 0
-                
-                # Only insert bars for active tickers
-                for symbol, bar in grouped.items():
-                    # Skip if not in our active universe
-                    if symbol not in active_symbols:
+                # Process bars
+                for symbol, bars in bars_map.data.items():
+                    if not bars:
                         continue
+                        
+                    # Convert to list of dicts
+                    bar_dicts = []
+                    for b in bars:
+                        bar_dicts.append({
+                            "timestamp": b.timestamp,
+                            "open": b.open,
+                            "high": b.high,
+                            "low": b.low,
+                            "close": b.close,
+                            "volume": b.volume,
+                            "vwap": b.vwap
+                        })
                     
-                    symbols_seen.add(symbol)
-                    bar_date = bar["timestamp"].date() if hasattr(bar["timestamp"], 'date') else bar["timestamp"]
+                    # Compute metrics
+                    atr_14 = compute_atr(bar_dicts, 14)
+                    avg_vol_14 = compute_avg_volume(bar_dicts, 14)
                     
-                    # Upsert: check if exists
-                    existing = db.query(DailyBar).filter(
-                        and_(
-                            DailyBar.symbol == symbol,
-                            DailyBar.date == bar_date,
-                        )
-                    ).first()
-                    
-                    if not existing:
-                        try:
-                            db_bar = DailyBar(
-                                symbol=symbol,
-                                date=bar["timestamp"],
-                                open=bar["open"],
-                                high=bar["high"],
-                                low=bar["low"],
-                                close=bar["close"],
-                                volume=bar["volume"],
-                                vwap=bar.get("vwap"),
+                    # Upsert
+                    # Delete existing in range
+                    min_date = bar_dicts[0]["timestamp"]
+                    db.execute(
+                        delete(DailyBar).where(
+                            and_(
+                                DailyBar.symbol == symbol,
+                                DailyBar.date >= min_date
                             )
-                            db.add(db_bar)
-                            db.flush()  # Catch unique constraint violations early
-                            day_synced += 1
-                        except Exception:
-                            db.rollback()  # Skip duplicates silently
+                        )
+                    )
+                    
+                    for b_dict in bar_dicts:
+                        is_latest = (b_dict == bar_dicts[-1])
+                        db_bar = DailyBar(
+                            symbol=symbol,
+                            date=b_dict["timestamp"],
+                            open=b_dict["open"],
+                            high=b_dict["high"],
+                            low=b_dict["low"],
+                            close=b_dict["close"],
+                            volume=b_dict["volume"],
+                            vwap=b_dict["vwap"],
+                            atr_14=atr_14 if is_latest else None,
+                            avg_volume_14=avg_vol_14 if is_latest else None
+                        )
+                        db.add(db_bar)
+                    
+                    total_synced += len(bar_dicts)
+                    if atr_14 is not None:
+                        metrics_updated += 1
                 
                 db.commit()
-                total_synced += day_synced
-                days_processed += 1
-                print(f"✓ {day_synced} bars")
                 
             except Exception as e:
-                print(f"✗ Error: {e}")
-                days_failed += 1
-            
-            # Rate limit
-            if i < len(trading_days) - 1:
-                await asyncio.sleep(12)
-        
-        # Compute ATR and avg_volume for all symbols with enough data
-        print(f"\nComputing metrics for {len(symbols_seen)} symbols...")
-        updated_count = 0
-        
-        for symbol in symbols_seen:
-            bars = db.query(DailyBar).filter(
-                DailyBar.symbol == symbol
-            ).order_by(DailyBar.date.asc()).all()
-            
-            if len(bars) >= 14:
-                bar_dicts = [
-                    {"timestamp": b.date, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
-                    for b in bars
-                ]
+                print(f"Error fetching chunk: {e}")
+                db.rollback()
                 
-                atr_14 = compute_atr(bar_dicts, 14)
-                avg_vol_14 = compute_avg_volume(bar_dicts, 14)
-                
-                if bars:
-                    bars[-1].atr_14 = atr_14
-                    bars[-1].avg_volume_14 = avg_vol_14
-                    updated_count += 1
-        
-        db.commit()
-        print(f"  ✓ Metrics updated for {updated_count} symbols")
-        
         return {
             "status": "success",
-            "days_processed": days_processed,
-            "days_failed": days_failed,
+            "symbols_processed": len(active_symbols),
             "bars_synced": total_synced,
-            "unique_symbols": len(symbols_seen),
-            "metrics_updated": updated_count,
+            "metrics_updated": metrics_updated
         }
-    
+        
     except Exception as e:
         db.rollback()
         return {"status": "error", "error": str(e)}
-    
     finally:
         db.close()
 

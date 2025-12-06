@@ -19,6 +19,7 @@ from alpaca.trading.requests import (
     MarketOrderRequest,
     GetOrdersRequest,
     ClosePositionRequest,
+    StopLossRequest,
 )
 from alpaca.trading.enums import (
     OrderSide as AlpacaOrderSide,
@@ -26,6 +27,7 @@ from alpaca.trading.enums import (
     OrderStatus as AlpacaOrderStatus,
     OrderType,
     QueryOrderStatus,
+    OrderClass,
 )
 from sqlalchemy.orm import Session
 
@@ -165,18 +167,23 @@ class OrderExecutor:
         try:
             # Determine Alpaca order side
             alpaca_side = AlpacaOrderSide.BUY if side == "LONG" else AlpacaOrderSide.SELL
+            stop_loss_side = AlpacaOrderSide.SELL if side == "LONG" else AlpacaOrderSide.BUY
             
-            # Create stop order for entry
-            # Using stop order: triggers when price hits entry_price
+            # Use OTO (One-Triggers-Other) order:
+            # - Primary: Stop entry order (triggers when price hits OR breakout level)
+            # - Secondary: Stop-loss order (only placed after primary fills)
+            # This ensures stop-loss is placed automatically when entry fills
             order_request = StopOrderRequest(
                 symbol=symbol,
                 qty=shares,
                 side=alpaca_side,
                 time_in_force=TimeInForce.DAY,  # Day order - expires at close
-                stop_price=entry_price,
+                stop_price=entry_price,  # Entry trigger price (OR high/low)
+                order_class=OrderClass.OTO,
+                stop_loss=StopLossRequest(stop_price=stop_price),
             )
             
-            # Submit order
+            # Submit OTO order (entry + stop-loss)
             order = self.client.submit_order(order_request)
             
             # Update signal status if provided

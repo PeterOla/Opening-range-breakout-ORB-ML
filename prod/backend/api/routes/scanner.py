@@ -17,13 +17,12 @@ from services.historical_scanner import (
     get_premarket_candidates,
 )
 from services.data_sync import (
-    sync_universe_daily_bars,
-    sync_daily_bars_fast,
+    sync_daily_bars_from_alpaca,
     cleanup_old_bars,
     get_universe_with_metrics,
 )
 from services.ticker_sync import (
-    sync_tickers_from_polygon,
+    sync_tickers_from_alpaca,
     get_active_tickers,
     get_ticker_stats,
     update_ticker_filters,
@@ -440,7 +439,7 @@ async def sync_tickers():
 async def _run_ticker_sync():
     """Background task for ticker sync."""
     try:
-        result = await sync_tickers_from_polygon()
+        result = await sync_tickers_from_alpaca()
         print(f"✓ Ticker sync completed: {result}")
     except Exception as e:
         print(f"✗ Ticker sync failed: {e}")
@@ -453,15 +452,13 @@ async def sync_daily_data(
     lookback_days: int = Query(14, ge=7, le=30, description="Number of days to fetch"),
 ):
     """
-    Sync daily bars for ALL stocks from Polygon (fast method).
+    Sync daily bars for ALL stocks from Alpaca.
     
-    Uses grouped daily endpoint: 1 API call = all stocks for 1 day.
-    For 14-day lookback: ~20 API calls total (vs thousands for per-symbol).
+    Uses Alpaca Historical Data API.
     
     This is the recommended method for nightly sync:
-    - Fetches OHLCV for all NYSE/NASDAQ stocks
+    - Fetches OHLCV for all active stocks
     - Computes ATR(14) and avg_volume(14) for each symbol
-    - Takes ~5 minutes for 14 days
     
     Runs as background task - returns immediately.
     Check /scanner/health to monitor progress.
@@ -485,7 +482,7 @@ async def sync_daily_data(
 async def _run_daily_sync(lookback_days: int):
     """Background task for daily bars sync."""
     try:
-        result = await sync_daily_bars_fast(lookback_days=lookback_days)
+        result = await sync_daily_bars_from_alpaca(lookback_days=lookback_days)
         print(f"✓ Daily bars sync completed: {result}")
         
         # Update filter flags after sync
@@ -532,13 +529,12 @@ async def ticker_stats():
 @router.post("/sync")
 async def sync_daily_bars(request: DataSyncRequest = None):
     """
-    Sync daily bars from Polygon for specified symbols (or all active tickers).
+    Sync daily bars from Alpaca for specified symbols (or all active tickers).
     
     If no symbols provided, uses active tickers from database.
     Requires /scanner/sync-tickers to be run first if using DB tickers.
     
-    This may take several minutes depending on the number of symbols
-    and API rate limits (5 calls/min for Polygon Starter).
+    This may take several minutes depending on the number of symbols.
     """
     if request and request.symbols:
         symbols = request.symbols
@@ -554,7 +550,7 @@ async def sync_daily_bars(request: DataSyncRequest = None):
     
     lookback_days = request.lookback_days if request else 30
     
-    result = await sync_universe_daily_bars(
+    result = await sync_daily_bars_from_alpaca(
         symbols=symbols,
         lookback_days=lookback_days,
     )

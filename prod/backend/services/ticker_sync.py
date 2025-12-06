@@ -11,21 +11,20 @@ from sqlalchemy import func
 
 from db.database import SessionLocal
 from db.models import Ticker
-from services.polygon_client import get_polygon_client
+from services.universe import get_trading_client
+from alpaca.trading.requests import GetAssetsRequest
+from alpaca.trading.enums import AssetClass, AssetStatus
 
 
-async def sync_tickers_from_polygon(
+async def sync_tickers_from_alpaca(
     db: Optional[Session] = None,
 ) -> dict:
     """
-    Sync active stock tickers from Polygon to database.
-    Uses official massive/polygon library with proper pagination.
+    Sync active stock tickers from Alpaca to database.
     
     - Inserts new tickers
     - Updates existing tickers
-    - Marks tickers as INACTIVE if they're no longer in Polygon's active list
-    
-    Expected result: ~5,000-6,000 active NYSE/NASDAQ common stocks.
+    - Marks tickers as INACTIVE if they're no longer in Alpaca's active list
     
     Args:
         db: Optional database session
@@ -39,30 +38,41 @@ async def sync_tickers_from_polygon(
         close_session = True
     
     try:
-        client = get_polygon_client()
+        client = get_trading_client()
         
-        # Use the sync method directly - works reliably
-        # The async wrapper can have issues with run_in_executor
-        tickers = client.get_active_stock_tickers_sync()
+        # Get all active US equities
+        request = GetAssetsRequest(
+            asset_class=AssetClass.US_EQUITY,
+            status=AssetStatus.ACTIVE
+        )
+        assets = client.get_all_assets(request)
+        
+        # Filter to tradeable, non-OTC, common stocks (roughly)
+        # Alpaca doesn't strictly separate "common stock" vs ETF in the asset object easily without parsing name/exchange
+        # But we can filter out obvious non-tradeables
+        tickers = [
+            a for a in assets 
+            if a.tradable and a.status == AssetStatus.ACTIVE and "." not in a.symbol
+        ]
         
         if not tickers:
-            return {"status": "error", "error": "No tickers fetched"}
+            return {"status": "error", "error": "No tickers fetched from Alpaca"}
+            
+        print(f"✓ Fetched {len(tickers)} active tickers from Alpaca")
         
-        print(f"✓ Fetched {len(tickers)} active tickers from Polygon")
-        
-        # Build set of active symbols from Polygon
-        active_symbols_from_polygon = {t.get("ticker") for t in tickers if t.get("ticker")}
+        # Build set of active symbols
+        active_symbols_from_source = {t.symbol for t in tickers}
         
         # Get current active symbols from database
         current_active_in_db = {
             row[0] for row in db.query(Ticker.symbol).filter(Ticker.active == True).all()
         }
         
-        # Find symbols to deactivate (in DB but not in Polygon's active list)
-        symbols_to_deactivate = current_active_in_db - active_symbols_from_polygon
+        # Find symbols to deactivate
+        symbols_to_deactivate = current_active_in_db - active_symbols_from_source
         
         print(f"  Current active in DB: {len(current_active_in_db)}")
-        print(f"  Active from Polygon: {len(active_symbols_from_polygon)}")
+        print(f"  Active from Alpaca: {len(active_symbols_from_source)}")
         print(f"  To deactivate: {len(symbols_to_deactivate)}")
         
         # Deactivate tickers no longer active
@@ -76,61 +86,42 @@ async def sync_tickers_from_polygon(
             )
             db.commit()
             print(f"  ✓ Deactivated {deactivated} tickers")
-        
+            
         print("Starting database insert/update...")
         
-        # Stats
         inserted = 0
         updated = 0
-        errors = 0
         
-        for i, t in enumerate(tickers):
-            symbol = t.get("ticker")
-            if not symbol:
-                continue
+        for t in tickers:
+            symbol = t.symbol
+            name = t.name
+            exchange = t.exchange.value if hasattr(t.exchange, 'value') else str(t.exchange)
             
-            try:
-                # Check if exists
-                existing = db.query(Ticker).filter(Ticker.symbol == symbol).first()
+            existing = db.query(Ticker).filter(Ticker.symbol == symbol).first()
+            
+            if existing:
+                existing.name = name
+                existing.primary_exchange = exchange
+                existing.active = True
+                existing.last_updated = datetime.utcnow()
+                updated += 1
+            else:
+                new_ticker = Ticker(
+                    symbol=symbol,
+                    name=name,
+                    primary_exchange=exchange,
+                    active=True,
+                    last_updated=datetime.utcnow()
+                )
+                db.add(new_ticker)
+                inserted += 1
                 
-                if existing:
-                    # Update
-                    existing.name = t.get("name")
-                    existing.primary_exchange = t.get("primary_exchange")
-                    existing.type = t.get("type")
-                    existing.active = True  # Re-activate if it was inactive
-                    existing.currency = t.get("currency", "USD")
-                    existing.cik = t.get("cik")
-                    existing.last_updated = datetime.utcnow()
-                    updated += 1
-                else:
-                    # Insert
-                    new_ticker = Ticker(
-                        symbol=symbol,
-                        name=t.get("name"),
-                        primary_exchange=t.get("primary_exchange"),
-                        type=t.get("type"),
-                        active=True,
-                        currency=t.get("currency", "USD"),
-                        cik=t.get("cik"),
-                    )
-                    db.add(new_ticker)
-                    inserted += 1
+            if (inserted + updated) % 500 == 0:
+                db.commit()
+                print(f"  Progress: {inserted + updated}/{len(tickers)} - {inserted} inserted, {updated} updated")
                 
-                # Commit in batches of 500
-                if (i + 1) % 500 == 0:
-                    db.commit()
-                    print(f"  Progress: {i + 1}/{len(tickers)} - {inserted} inserted, {updated} updated")
-                    
-            except Exception as e:
-                errors += 1
-                if errors <= 5:
-                    print(f"  Error on {symbol}: {e}")
-                db.rollback()
-        
-        # Final commit
         db.commit()
-        print(f"✓ Database sync complete: {inserted} inserted, {updated} updated, {deactivated} deactivated, {errors} errors")
+        print(f"✓ Database sync complete: {inserted} inserted, {updated} updated, {deactivated} deactivated")
         
         return {
             "status": "success",
@@ -138,19 +129,19 @@ async def sync_tickers_from_polygon(
             "inserted": inserted,
             "updated": updated,
             "deactivated": deactivated,
-            "errors": errors,
+            "errors": 0
         }
-    
+        
     except Exception as e:
         db.rollback()
-        print(f"✗ Sync failed: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error syncing tickers from Alpaca: {e}")
         return {"status": "error", "error": str(e)}
-    
+        
     finally:
         if close_session:
             db.close()
+
+
 
 
 def get_active_tickers(

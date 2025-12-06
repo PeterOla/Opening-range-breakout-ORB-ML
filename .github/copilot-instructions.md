@@ -8,6 +8,7 @@
 - **Code**: Minimum viable snippets only
 - **Options**: List briefly, recommend one
 - **Next steps**: Always highlight concrete action
+- **Priority**: Answer the user’s explicit question before any additional commentary or elaboration
 
 ## Interaction Principles
 Act as intellectual sparring partner:
@@ -33,9 +34,6 @@ Act as intellectual sparring partner:
 - Format: inline plots with `%matplotlib inline`, readable font sizes (12+)
 
 ## Project Management
-**Critical:** After completing any task, immediately update progress tracking:
-- Tick checkbox in `docs/overview.md` section 4a (Progress Checklist)
-- Mark corresponding priority in `docs/PLAN.md` if applicable
-- Single source of truth: `docs/overview.md` for comprehensive tracking
+**Critical:** Never Assume task relating to data inside parquet files without running the relevant data loading and processing scripts.
 
 **Never** leave checkboxes stale after finishing work.

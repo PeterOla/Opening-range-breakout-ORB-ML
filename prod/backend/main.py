@@ -67,15 +67,15 @@ async def _check_and_sync_data():
         logger.info(f"📊 Data check: {ticker_count} tickers, {bar_count} daily bars")
         
         if ticker_count == 0:
-            logger.info("🔄 No tickers found - starting auto-sync from Polygon...")
-            from services.ticker_sync import sync_tickers_from_polygon
-            result = await sync_tickers_from_polygon()
+            logger.info("🔄 No tickers found - starting auto-sync from Alpaca...")
+            from services.ticker_sync import sync_tickers_from_alpaca
+            result = await sync_tickers_from_alpaca()
             logger.info(f"✓ Ticker sync complete: {result}")
             
             # After tickers synced, sync daily bars
-            logger.info("🔄 Starting daily bars sync...")
-            from services.data_sync import sync_daily_bars_fast
-            result = await sync_daily_bars_fast(lookback_days=14)
+            logger.info("🔄 Starting daily bars sync from Alpaca...")
+            from services.data_sync import sync_daily_bars_from_alpaca
+            result = await sync_daily_bars_from_alpaca(lookback_days=30)
             logger.info(f"✓ Daily bars sync complete: {result}")
             
             # Update filter flags
@@ -84,9 +84,9 @@ async def _check_and_sync_data():
             logger.info("✓ Ticker filters updated")
             
         elif bar_count == 0:
-            logger.info("🔄 No daily bars found - starting auto-sync...")
-            from services.data_sync import sync_daily_bars_fast
-            result = await sync_daily_bars_fast(lookback_days=14)
+            logger.info("🔄 No daily bars found - starting auto-sync from Alpaca...")
+            from services.data_sync import sync_daily_bars_from_alpaca
+            result = await sync_daily_bars_from_alpaca(lookback_days=30)
             logger.info(f"✓ Daily bars sync complete: {result}")
             
             from services.ticker_sync import update_ticker_filters

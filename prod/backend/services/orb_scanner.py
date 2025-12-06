@@ -1,7 +1,7 @@
 """
-ORB Scanner Service (Hybrid: Polygon DB + Alpaca Live).
+ORB Scanner Service (Hybrid: Local Parquet DB + Alpaca Live).
 
-1. Uses daily_bars DB (from Polygon) for ATR and avg_volume
+1. Uses daily_bars DB (from local Parquet) for ATR and avg_volume
 2. Uses Alpaca for live 5-min opening range bar
 3. Computes RVOL, applies filters, ranks top 20
 """
@@ -140,8 +140,10 @@ async def scan_orb_candidates(
         metrics_lookup = {u["symbol"]: u for u in universe}
         
         # Step 2: Fetch today's 5-min bars from Alpaca
-        print(f"Fetching 5-min bars from Alpaca for {len(symbols)} symbols...")
-        fivemin_bars = await fetch_5min_bars(symbols, lookback_days=1)
+        print(f"Fetching 5-min bars for {len(symbols)} symbols (prefer local parquet when available)...")
+        # Use today's date as target_date to prefer local Parquet/duckdb storage for pre-market views
+        target_dt = datetime.combine(today, time(0, 0))
+        fivemin_bars = await fetch_5min_bars(symbols, lookback_days=1, target_date=target_dt)
         print(f"Got 5-min bars for {len(fivemin_bars)} symbols")
         
         # Step 3 & 4: Extract OR, compute RVOL, filter

@@ -16,9 +16,19 @@ class Settings(BaseSettings):
     
     # Polygon Configuration
     POLYGON_API_KEY: str = ""
+
+    # Alpha Vantage Configuration
+    ALPHAVANTAGE_API_KEY: str = ""
     
     # Database
-    DATABASE_URL: str = "sqlite:///./trading.db"
+    # Default to local Postgres for transactionals (Docker compose above). If you prefer SQLite
+    # for quick single-process runs, set DATABASE_URL to sqlite:///./trading.db
+    DATABASE_URL: str = "postgresql+psycopg2://orb:orb@localhost:5432/orb"  # Local Postgres default
+
+    # DuckDB and Parquet paths (local-only setup)
+    DUCKDB_PATH: str = "./data/duckdb_local.db"
+    PARQUET_BASE_PATH: str = "./data/processed"
+    DELTA_BASE_PATH: str = "./data/deltas"
     
     # API Configuration
     API_HOST: str = "0.0.0.0"

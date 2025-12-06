@@ -30,13 +30,13 @@ async def job_nightly_data_sync():
     """
     6:00 PM ET - Nightly data sync (after market close).
     
-    1. Sync ticker universe from Polygon (weekly on Sundays only)
-    2. Fetch last 14 days of daily bars for all stocks
+    1. Sync ticker universe from Alpaca (weekly on Sundays only)
+    2. Fetch last 14 days of daily bars for all stocks from Alpaca
     3. Compute ATR(14) and avg_volume(14)
     4. Update filter flags on tickers
     """
-    from services.data_sync import sync_daily_bars_fast
-    from services.ticker_sync import sync_tickers_from_polygon, update_ticker_filters
+    from services.data_sync import sync_daily_bars_from_alpaca
+    from services.ticker_sync import sync_tickers_from_alpaca, update_ticker_filters
     
     logger.info("🌙 NIGHTLY DATA SYNC triggered at 6:00 PM ET")
     
@@ -45,12 +45,12 @@ async def job_nightly_data_sync():
         today = datetime.now(ET)
         if today.weekday() == 6:  # Sunday
             logger.info("📊 Sunday - syncing ticker universe...")
-            ticker_result = await sync_tickers_from_polygon(include_delisted=False)
+            ticker_result = await sync_tickers_from_alpaca()
             logger.info(f"  Tickers: {ticker_result}")
         
         # Sync daily bars (every day)
         logger.info("📈 Syncing daily bars (14 days)...")
-        bars_result = await sync_daily_bars_fast(lookback_days=14)
+        bars_result = await sync_daily_bars_from_alpaca(lookback_days=14)
         logger.info(f"  Bars: {bars_result}")
         
         # Update filter flags
@@ -168,6 +168,46 @@ async def job_premarket_check():
         raise
 
 
+async def job_run_orb_scanner():
+    """
+    9:35 AM ET - Run ORB scanner after opening range forms.
+    
+    Scans all stocks in universe for ORB candidates:
+    1. Fetch 5-min bars for first 5 minutes (9:30-9:35)
+    2. Calculate OR high, OR low, OR volume
+    3. Compute RVOL (OR volume / avg volume)
+    4. Rank by RVOL and save to opening_ranges table
+    """
+    from services.orb_scanner import scan_orb_candidates
+    from services.market_calendar import MarketCalendar
+    
+    logger.info("🔍 ORB SCANNER triggered at 9:35 AM ET")
+    
+    # Check market is open today
+    calendar = MarketCalendar()
+    today = datetime.now(ET).date()
+    if not calendar.is_trading_day(today):
+        logger.info("📅 Market closed today - skipping scanner")
+        return {"status": "skipped", "reason": "market_closed"}
+    
+    try:
+        # Run the scanner
+        result = await scan_orb_candidates()
+        
+        if result.get("status") == "success":
+            logger.info(f"✅ Scanner complete: {result.get('candidates_total', 0)} total, {result.get('candidates_top_n', 0)} top candidates")
+        else:
+            logger.warning(f"⚠️ Scanner returned: {result.get('status')} - {result.get('error', 'unknown')}")
+        
+        return result
+    
+    except Exception as e:
+        logger.error(f"❌ ORB Scanner failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
 async def job_auto_execute_orb():
     """
     9:36 AM ET - Auto signal generation and execution.
@@ -235,22 +275,33 @@ async def job_auto_execute_orb():
             logger.warning("⚠️ Signals generated but none pending - already executed?")
             return {"status": "already_executed", "signals_generated": signals_generated}
         
-        # Get current account equity for position sizing
+        # Get current account for position sizing
         account = executor.get_account()
-        equity = account.get("equity", 1500)
+        equity = float(account.get("equity", 1500))
+        buying_power = float(account.get("buying_power", equity))
+        
+        # Cap each position by buying power / number of positions
+        max_position_value = buying_power / strategy["top_n"]
         
         orders_placed = 0
         orders_failed = 0
         results = []
+        executed_symbols = set()  # Track executed symbols to prevent duplicates
         
         db = SessionLocal()
         try:
             for signal in pending:
-                # Calculate shares based on risk
+                # Skip if we already executed this symbol today
+                if signal["symbol"] in executed_symbols:
+                    logger.info(f"⏭️ Skipping duplicate: {signal['symbol']}")
+                    continue
+                
+                # Calculate shares based on risk with buying power constraint
                 shares = calculate_position_size(
                     entry_price=signal["entry_price"],
                     stop_price=signal["stop_price"],
                     account_equity=equity,
+                    max_position_value=max_position_value,
                 )
                 
                 if shares > 0:
@@ -266,7 +317,16 @@ async def job_auto_execute_orb():
                     
                     if order_result.get("status") == "submitted":
                         orders_placed += 1
+                        executed_symbols.add(signal["symbol"])
                         logger.info(f"✅ Placed {signal['side']} order: {signal['symbol']} x{shares}")
+                        
+                        # Mark signal as executed in database
+                        from db.models import Signal
+                        db.query(Signal).filter(Signal.id == signal["id"]).update({
+                            "status": "SUBMITTED",
+                            "order_id": order_result.get("order_id"),
+                        })
+                        db.commit()
                     else:
                         orders_failed += 1
                         logger.warning(f"❌ Failed order: {signal['symbol']} - {order_result.get('error')}")
@@ -469,8 +529,24 @@ def start_scheduler():
     )
     logger.info("📅 Scheduled: Pre-market check at 9:25 AM ET (Mon-Fri)")
     
+    # Job 2a: ORB Scanner at 9:35 AM ET (Mon-Fri)
+    # Runs when Opening Range is complete - scans for candidates
+    scheduler.add_job(
+        job_run_orb_scanner,
+        CronTrigger(
+            hour=9,
+            minute=35,
+            day_of_week="mon-fri",
+            timezone=ET,
+        ),
+        id="orb_scanner",
+        name="ORB Scanner (9:35 AM)",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: ORB scanner at 9:35 AM ET (Mon-Fri)")
+    
     # Job 2b: Auto signal generation + execution at 9:36 AM ET (Mon-Fri)
-    # Runs 6 mins after market open when Opening Range is complete
+    # Runs 1 min after scanner when candidates are ready
     scheduler.add_job(
         job_auto_execute_orb,
         CronTrigger(

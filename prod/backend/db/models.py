@@ -2,7 +2,7 @@
 SQLAlchemy database models.
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum, UniqueConstraint, BigInteger
 from sqlalchemy.sql import func
 import enum
 
@@ -228,6 +228,9 @@ class Ticker(Base):
     meets_price_filter = Column(Boolean, default=False)  # price >= $5
     meets_volume_filter = Column(Boolean, default=False)  # avg_vol >= 1M
     meets_atr_filter = Column(Boolean, default=False)  # ATR >= $0.50
+    
+    # Float (shares outstanding) for low-float filtering
+    float = Column(BigInteger, nullable=True)  # Shares outstanding (e.g., 5000000 = 5M shares)
 
 
 class SimulatedTrade(Base):
