@@ -58,15 +58,64 @@ def fetch_balance_sheet(symbol, api_key):
             shares = report.get("commonStockSharesOutstanding")
             
             if date and shares and shares != "None":
-                records.append({
-                    "symbol": symbol,
-                    "date": date,
-                    "shares_outstanding": int(shares)
-                })
+                try:
+                    # Convert to float first, then int to handle decimal strings like "908.46"
+                    shares_int = int(float(shares))
+                    records.append({
+                        "symbol": symbol,
+                        "date": date,
+                        "shares_outstanding": shares_int
+                    })
+                except (ValueError, TypeError):
+                    logger.debug(f"[{symbol}] Skipping invalid shares value: {shares}")
+                    continue
         return records
     except Exception as e:
         logger.error(f"Error fetching {symbol}: {e}")
         return None
+
+
+def fetch_shares_for_symbols(symbols: list) -> pd.DataFrame:
+    """
+    Fetch shares outstanding for a list of symbols from Alpha Vantage.
+    
+    Args:
+        symbols: List of ticker symbols to fetch
+    
+    Returns:
+        DataFrame with columns: symbol, date, shares_outstanding
+    """
+    settings = Settings()
+    api_key = settings.ALPHAVANTAGE_API_KEY
+    
+    if not api_key:
+        logger.error("ALPHAVANTAGE_API_KEY not found in environment variables.")
+        return pd.DataFrame()
+    
+    all_records = []
+    
+    for i, symbol in enumerate(symbols):
+        logger.info(f"[{i+1}/{len(symbols)}] Fetching shares for {symbol}...")
+        
+        records = fetch_balance_sheet(symbol, api_key)
+        
+        if records:
+            all_records.extend(records)
+            logger.debug(f"  -> Found {len(records)} quarterly records for {symbol}.")
+        else:
+            logger.warning(f"  -> No shares data found for {symbol}")
+        
+        # Rate limiting: 5 calls per minute for free tier
+        time.sleep(12)
+    
+    if not all_records:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(all_records)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
+    
+    return df
 
 def main():
     settings = Settings()

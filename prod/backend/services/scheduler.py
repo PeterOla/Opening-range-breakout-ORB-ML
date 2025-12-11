@@ -30,40 +30,49 @@ async def job_nightly_data_sync():
     """
     6:00 PM ET - Nightly data sync (after market close).
     
-    1. Sync ticker universe from Alpaca (weekly on Sundays only)
-    2. Fetch last 14 days of daily bars for all stocks from Alpaca
-    3. Compute ATR(14) and avg_volume(14)
-    4. Update filter flags on tickers
+    Unified pipeline: fetch → enrich → validate → database sync
+    Calls DataPipeline/daily_sync.py orchestrator.
+    
+    Steps:
+    1. Fetch daily + 5-min bars from Alpaca (all 5,012 symbols, parallel)
+    2. Enrich with shares_outstanding + TR + ATR14 + filter flags
+    3. Validate data quality and completeness
+    4. Sync metrics to database (daily_metrics_historical table)
     """
-    from services.data_sync import sync_daily_bars_from_alpaca
-    from services.ticker_sync import sync_tickers_from_alpaca, update_ticker_filters
+    import sys
+    from pathlib import Path
     
     logger.info("🌙 NIGHTLY DATA SYNC triggered at 6:00 PM ET")
     
     try:
-        # Check if it's Sunday - sync tickers weekly
-        today = datetime.now(ET)
-        if today.weekday() == 6:  # Sunday
-            logger.info("📊 Sunday - syncing ticker universe...")
-            ticker_result = await sync_tickers_from_alpaca()
-            logger.info(f"  Tickers: {ticker_result}")
+        # Import unified orchestrator from DataPipeline
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+        from DataPipeline.daily_sync import DailySyncOrchestrator
         
-        # Sync daily bars (every day)
-        logger.info("📈 Syncing daily bars (14 days)...")
-        bars_result = await sync_daily_bars_from_alpaca(lookback_days=14)
-        logger.info(f"  Bars: {bars_result}")
+        # Run the unified pipeline
+        logger.info("🔄 Running unified data pipeline (fetch → enrich → validate → sync)...")
+        orchestrator = DailySyncOrchestrator()
+        results = orchestrator.run()
         
-        # Update filter flags
-        if bars_result.get("status") == "success":
-            logger.info("🔄 Updating ticker filters...")
-            filter_result = await update_ticker_filters()
-            logger.info(f"  Filters: {filter_result}")
-        
-        logger.info("✅ Nightly data sync complete")
-        return {"status": "success", "bars": bars_result}
+        # Check if pipeline succeeded
+        if results["status"] == "success":
+            logger.info("✅ Nightly data sync complete")
+            logger.info(f"   Fetch: {results['fetch']['duration_seconds']:.1f}s ({results['fetch']['rows_daily']:,} rows)")
+            logger.info(f"   Enrich: {results['enrich']['duration_seconds']:.1f}s ({results['enrich']['rows_processed']:,} rows)")
+            logger.info(f"   Validate: {results['validation']['duration_seconds']:.1f}s")
+            logger.info(f"   DB Sync: {results['db_sync']['duration_seconds']:.1f}s")
+            logger.info(f"   Total: {results['total_duration_seconds']/60:.1f} minutes")
+            return {"status": "success", "results": results}
+        else:
+            logger.error(f"❌ Nightly data sync failed: {results['status']}")
+            for error in results['errors']:
+                logger.error(f"   - {error}")
+            return {"status": "failed", "errors": results['errors']}
     
     except Exception as e:
         logger.error(f"❌ Nightly data sync failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
