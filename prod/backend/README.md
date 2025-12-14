@@ -15,6 +15,10 @@ cp .env.example .env
 # Edit .env with your Alpaca credentials
 ```
 
+Shares outstanding (free)
+- Set `SEC_USER_AGENT` in `.env` (SEC requires a descriptive User-Agent with contact details).
+- Example: `SEC_USER_AGENT="ORBResearch/1.0 your.email@example.com"`
+
 3. **Run development server:**
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000

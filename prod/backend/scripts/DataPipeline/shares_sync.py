@@ -131,7 +131,7 @@ def sync_missing_shares(symbols: Optional[List[str]] = None, skip_if_recent: boo
         return 0, 0
     
     logger.info(f"Fetching shares for {len(symbols_to_fetch)} symbols ({len(missing_truly)} missing, {len(stale_symbols)} stale)")
-    logger.info(f"Estimated fetch time: ~{len(symbols_to_fetch) // 300}h at Alpha Vantage rate limit")
+    logger.info("Source: SEC Company Facts (free). Uses polite sleeps + local caching.")
     
     # Import fetch function (lazy import to avoid circular dependency)
     try:
