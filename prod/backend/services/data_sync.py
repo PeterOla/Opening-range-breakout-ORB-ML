@@ -24,6 +24,7 @@ from execution.alpaca_client import get_alpaca_client, get_data_client
 
 from db.database import SessionLocal
 from db.models import DailyBar, Ticker
+from core.config import settings
 
 ET = ZoneInfo("America/New_York")
 
@@ -443,6 +444,7 @@ def get_universe_with_metrics(
     min_price: float = 5.0,
     min_atr: float = 0.50,
     min_avg_volume: float = 1_000_000,
+    allowed_symbols: Optional[set[str]] = None,
     db: Optional[Session] = None,
 ) -> list[dict]:
     """
@@ -453,40 +455,135 @@ def get_universe_with_metrics(
     if db is None:
         db = SessionLocal()
         close_session = True
-    
-    try:
-        # Get latest bar per symbol with metrics
-        from sqlalchemy import func
-        
-        # Subquery for latest date per symbol
-        subq = db.query(
-            DailyBar.symbol,
-            func.max(DailyBar.date).label("max_date")
-        ).group_by(DailyBar.symbol).subquery()
-        
-        # Join to get full bar data
-        latest_bars = db.query(DailyBar).join(
-            subq,
-            and_(
-                DailyBar.symbol == subq.c.symbol,
-                DailyBar.date == subq.c.max_date,
+
+    def _repo_root() -> Path:
+        # services/data_sync.py -> services -> backend -> prod -> repo_root
+        return Path(__file__).resolve().parents[3]
+
+    def _daily_parquet_dir() -> Path:
+        p1 = _repo_root() / "data" / "processed" / "daily"
+        p2 = Path("data/processed/daily")
+        return p1 if p1.exists() else p2
+
+    def _get_universe_with_metrics_from_local_parquet() -> list[dict]:
+        import duckdb
+
+        daily_dir = _daily_parquet_dir()
+        if not daily_dir.exists():
+            return []
+
+        glob_path = str((daily_dir / "*.parquet").resolve()).replace("\\", "/")
+        duckdb_path = getattr(settings, "DUCKDB_PATH", None)
+        con = duckdb.connect(database=(duckdb_path or ":memory:"))
+
+        allowed_df = None
+        if allowed_symbols is not None:
+            allowed_df = pd.DataFrame({"symbol": [str(s).upper().strip() for s in allowed_symbols if s]})
+            if not allowed_df.empty:
+                con.register("allowed_symbols", allowed_df)
+
+        base_query = """
+            WITH raw AS (
+                SELECT
+                    symbol,
+                    date,
+                    close,
+                    atr_14,
+                    avg_volume_14
+                FROM read_parquet(? )
+                WHERE atr_14 IS NOT NULL
+                  AND avg_volume_14 IS NOT NULL
+            ),
+            latest AS (
+                SELECT
+                    symbol,
+                    max(date) AS date,
+                    arg_max(close, date) AS close,
+                    arg_max(atr_14, date) AS atr_14,
+                    arg_max(avg_volume_14, date) AS avg_volume_14
+                FROM raw
+                GROUP BY symbol
             )
-        ).filter(
-            DailyBar.close >= min_price,
-            DailyBar.atr_14 >= min_atr,
-            DailyBar.avg_volume_14 >= min_avg_volume,
-        ).all()
-        
+            SELECT
+                l.symbol,
+                l.date,
+                l.close,
+                l.atr_14,
+                l.avg_volume_14
+            FROM latest l
+        """
+
+        if allowed_df is not None and not allowed_df.empty:
+            base_query += " JOIN allowed_symbols a ON a.symbol = l.symbol "
+
+        base_query += """
+            WHERE l.close >= ?
+              AND l.atr_14 >= ?
+              AND l.avg_volume_14 >= ?
+        """
+
+        df = con.execute(base_query, [glob_path, float(min_price), float(min_atr), float(min_avg_volume)]).fetchdf()
+        if df is None or df.empty:
+            return []
+
+        df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
         return [
             {
-                "symbol": bar.symbol,
-                "date": bar.date,
-                "close": bar.close,
-                "atr_14": bar.atr_14,
-                "avg_volume_14": bar.avg_volume_14,
+                "symbol": row["symbol"],
+                "date": row["date"],
+                "close": float(row["close"]),
+                "atr_14": float(row["atr_14"]),
+                "avg_volume_14": float(row["avg_volume_14"]),
             }
-            for bar in latest_bars
+            for _, row in df.iterrows()
         ]
+    
+    try:
+        # Prefer DB path when available; fall back to local Parquet via DuckDB.
+        try:
+            # Get latest bar per symbol with metrics
+            from sqlalchemy import func
+
+            # Subquery for latest date per symbol
+            subq = db.query(
+                DailyBar.symbol,
+                func.max(DailyBar.date).label("max_date")
+            ).group_by(DailyBar.symbol).subquery()
+
+            # Join to get full bar data
+            latest_bars = db.query(DailyBar).join(
+                subq,
+                and_(
+                    DailyBar.symbol == subq.c.symbol,
+                    DailyBar.date == subq.c.max_date,
+                )
+            ).filter(
+                DailyBar.close >= min_price,
+                DailyBar.atr_14 >= min_atr,
+                DailyBar.avg_volume_14 >= min_avg_volume,
+            ).all()
+
+            if latest_bars:
+                out = [
+                    {
+                        "symbol": bar.symbol,
+                        "date": bar.date,
+                        "close": bar.close,
+                        "atr_14": bar.atr_14,
+                        "avg_volume_14": bar.avg_volume_14,
+                    }
+                    for bar in latest_bars
+                ]
+                if allowed_symbols is not None:
+                    allowed = {str(s).upper().strip() for s in allowed_symbols if s}
+                    out = [r for r in out if r["symbol"].upper() in allowed]
+                return out
+
+        except Exception:
+            # Common case: sqlite DB exists but daily_bars table isn't created/populated.
+            pass
+
+        return _get_universe_with_metrics_from_local_parquet()
     
     finally:
         if close_session:

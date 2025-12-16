@@ -29,6 +29,7 @@ Local development setup (Postgres + DuckDB + Parquet)
 
 Notes:
 - By default the app uses DuckDB for historical queries (local file `./data/duckdb_local.db`).
+- The live scanner's base filters (price/ATR/avg volume) prefer `daily_bars` in SQL, but will fall back to `data/processed/daily/*.parquet` via DuckDB if the DB table is missing/empty.
 - This setup is local-only; no Neon or cloud storage is required.
 
 ---
@@ -45,7 +46,7 @@ From repo root:
 
 ### Configure `.env`
 
-Minimum variables:
+Minimum variables (live):
 
     EXECUTION_BROKER=tradezero
     ORB_UNIVERSE=micro_small
@@ -54,6 +55,10 @@ Minimum variables:
     TRADEZERO_USERNAME=...
     TRADEZERO_PASSWORD=...
     TRADEZERO_HEADLESS=false
+
+Note:
+- When `TRADEZERO_DRY_RUN=true`, credentials are optional (useful for a local smoke test of scan/signal sizing/order formatting).
+- When `TRADEZERO_DRY_RUN=false`, credentials are required and Selenium will log in to TradeZero.
 
 Safety defaults (recommended):
 

@@ -13,7 +13,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from db.database import SessionLocal
+from db.database import SessionLocal, Base, engine
 from db.models import DailyBar, OpeningRange
 from services.universe import get_data_client, fetch_5min_bars
 from services.data_sync import get_universe_with_metrics
@@ -156,31 +156,33 @@ async def scan_orb_candidates(
     Returns:
         Dict with scan results and candidates
     """
+    # Ensure local sqlite DB has tables even in "scan-only" runs.
+    Base.metadata.create_all(bind=engine)
+
     db = SessionLocal()
     today = datetime.now(ET).date()
     
     try:
         allowed_symbols = _allowed_symbols_from_universe_setting()
 
-        # Step 1: Get universe with pre-computed metrics from DB
-        print("Fetching universe from database...")
+        # Step 1: Get universe with pre-computed metrics from DB, or fall back to local Parquet.
+        print("Fetching universe (DB preferred; Parquet fallback)...")
         universe = get_universe_with_metrics(
             min_price=min_price,
             min_atr=min_atr,
             min_avg_volume=min_avg_volume,
+            allowed_symbols=allowed_symbols,
             db=db,
         )
         
         if not universe:
             return {
                 "status": "error",
-                "error": "No symbols in database pass base filters. Run data sync first.",
+                "error": "No symbols pass base filters (DB/Parquet). Check daily Parquet metrics and thresholds.",
                 "candidates": [],
             }
         
         symbols = [u["symbol"] for u in universe]
-        if allowed_symbols is not None:
-            symbols = [s for s in symbols if s.upper() in allowed_symbols]
         print(f"Universe size after base filters: {len(symbols)} symbols")
         
         # Create lookup for metrics
@@ -194,27 +196,33 @@ async def scan_orb_candidates(
         print(f"Got 5-min bars for {len(fivemin_bars)} symbols")
         
         # Step 3 & 4: Extract OR, compute RVOL, filter
-        candidates = []
-        
+        candidates: list[dict] = []
+        or_bar_found = 0
+
         for symbol in symbols:
-            if symbol not in fivemin_bars:
+            bars_df = fivemin_bars.get(symbol)
+            if bars_df is None:
                 continue
-            
-            or_data = get_opening_range_from_bars(fivemin_bars[symbol], today)
+
+            or_data = get_opening_range_from_bars(bars_df, target_date=today)
             if or_data is None:
                 continue
-            
+
             # Skip doji candles
             if or_data["direction"] == 0:
                 continue
-            
-            metrics = metrics_lookup[symbol]
-            
+
+            or_bar_found += 1
+
+            metrics = metrics_lookup.get(symbol)
+            if not metrics:
+                continue
+
             # Compute RVOL
             rvol = compute_rvol(or_data["or_volume"], metrics["avg_volume_14"])
             if rvol is None or rvol < min_rvol:
                 continue
-            
+
             # Calculate entry and stop
             atr = metrics["atr_14"]
             if or_data["direction"] == 1:  # Long
@@ -223,38 +231,47 @@ async def scan_orb_candidates(
             else:  # Short
                 entry_price = or_data["or_low"]
                 stop_price = entry_price + (0.10 * atr)
-            
-            candidates.append({
-                "symbol": symbol,
-                "price": metrics["close"],
-                "atr": round(atr, 2),
-                "avg_volume": int(metrics["avg_volume_14"]),
-                "rvol": round(rvol, 2),
-                "or_high": round(or_data["or_high"], 2),
-                "or_low": round(or_data["or_low"], 2),
-                "or_open": round(or_data["or_open"], 2),
-                "or_close": round(or_data["or_close"], 2),
-                "or_volume": int(or_data["or_volume"]),
-                "direction": or_data["direction"],
-                "direction_label": "LONG" if or_data["direction"] == 1 else "SHORT",
-                "entry_price": round(entry_price, 2),
-                "stop_price": round(stop_price, 2),
-                "stop_distance": round(0.10 * atr, 2),
-            })
-        
+
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "price": metrics["close"],
+                    "atr": round(atr, 2),
+                    "avg_volume": int(metrics["avg_volume_14"]),
+                    "rvol": round(rvol, 2),
+                    "or_high": round(or_data["or_high"], 2),
+                    "or_low": round(or_data["or_low"], 2),
+                    "or_open": round(or_data["or_open"], 2),
+                    "or_close": round(or_data["or_close"], 2),
+                    "or_volume": int(or_data["or_volume"]),
+                    "direction": or_data["direction"],
+                    "direction_label": "LONG" if or_data["direction"] == 1 else "SHORT",
+                    "entry_price": round(entry_price, 2),
+                    "stop_price": round(stop_price, 2),
+                    "stop_distance": round(0.10 * atr, 2),
+                }
+            )
+
+        if or_bar_found == 0:
+            return {
+                "status": "error",
+                "error": "No 9:30 ET opening-range bar found for today. If you are running before/after market hours, run after 09:35 ET or adjust your data source.",
+                "candidates": [],
+            }
+
         print(f"Candidates after RVOL filter: {len(candidates)}")
-        
+
         # Step 5: Rank by RVOL and take top N
         candidates.sort(key=lambda x: x["rvol"], reverse=True)
-        
+
         # Assign ranks
         for i, c in enumerate(candidates):
             c["rank"] = i + 1
-        
+
         top_candidates = candidates[:top_n]
-        
+
         # Step 6: Save to database if requested
-        if save_to_db and top_candidates:
+        if save_to_db and candidates:
             for c in candidates:  # Save all candidates, not just top N
                 or_record = OpeningRange(
                     symbol=c["symbol"],
@@ -276,7 +293,7 @@ async def scan_orb_candidates(
                     order_placed=False,
                 )
                 db.add(or_record)
-            
+
             db.commit()
             print(f"Saved {len(candidates)} candidates to opening_ranges table")
         

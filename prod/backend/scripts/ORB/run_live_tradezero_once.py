@@ -34,22 +34,32 @@ async def main_async(scan: bool, generate: bool, execute: bool) -> int:
     executor = get_executor()
 
     if scan:
-        await scan_orb_candidates(
+        scan_res = await scan_orb_candidates(
             top_n=int(strategy["top_n"]),
             save_to_db=True,
         )
+        if isinstance(scan_res, dict):
+            status = scan_res.get("status")
+            err = scan_res.get("error")
+            cands = scan_res.get("candidates") or []
+            print(f"[scan] status={status} candidates={len(cands)}" + (f" error={err}" if err else ""))
 
     account = executor.get_account()
     equity = float(account.get("equity", 100000))
     buying_power = float(account.get("buying_power", equity))
 
     if generate:
-        await run_signal_generation(
+        gen_res = await run_signal_generation(
             account_equity=equity,
             risk_per_trade_pct=float(strategy["risk_per_trade"]),
             max_positions=int(strategy["top_n"]),
             direction=strategy["direction"],
         )
+        if isinstance(gen_res, dict):
+            status = gen_res.get("status")
+            sigs = gen_res.get("signals") or []
+            msg = gen_res.get("message")
+            print(f"[generate] status={status} signals={len(sigs)}" + (f" message={msg}" if msg else ""))
 
     if execute:
         pending = get_pending_signals()

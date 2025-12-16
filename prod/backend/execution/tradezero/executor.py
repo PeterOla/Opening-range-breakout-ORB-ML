@@ -33,7 +33,15 @@ class TradeZeroExecutor:
         self.kill_switch_file = Path(settings.KILL_SWITCH_FILE)
         self.dry_run = bool(settings.TRADEZERO_DRY_RUN)
 
-        if not settings.TRADEZERO_USERNAME or not settings.TRADEZERO_PASSWORD:
+        # In DRY-RUN mode, allow smoke-testing the scan -> signals -> execution pipeline
+        # without Selenium login/credentials. We only require credentials when we intend
+        # to place real orders.
+        self.client: Optional[TradeZero] = None
+
+        has_creds = bool(settings.TRADEZERO_USERNAME and settings.TRADEZERO_PASSWORD)
+        if not has_creds:
+            if self.dry_run:
+                return
             raise ValueError(
                 "TradeZero credentials missing. Set TRADEZERO_USERNAME and TRADEZERO_PASSWORD in .env"
             )
@@ -46,7 +54,8 @@ class TradeZeroExecutor:
 
     def __del__(self):
         try:
-            self.client.exit()
+            if self.client is not None:
+                self.client.exit()
         except Exception:
             pass
 
@@ -71,7 +80,8 @@ class TradeZeroExecutor:
     def get_account(self) -> dict:
         equity = 0.0
         try:
-            equity = float(self.client.get_equity() or 0.0)
+            if self.client is not None:
+                equity = float(self.client.get_equity() or 0.0)
         except Exception:
             equity = 0.0
 
@@ -88,6 +98,9 @@ class TradeZeroExecutor:
         }
 
     def get_positions(self) -> list[dict]:
+        if self.client is None:
+            return []
+
         df = self.client.get_portfolio()
         if df is None or df.empty:
             return []
@@ -111,6 +124,9 @@ class TradeZeroExecutor:
         return out
 
     def cancel_all_orders(self) -> dict:
+        if self.client is None:
+            return {"status": "success", "cancelled": 0, "dry_run": self.dry_run}
+
         df = self.client.get_active_orders()
         if df is None or df.empty:
             return {"status": "success", "cancelled": 0}
