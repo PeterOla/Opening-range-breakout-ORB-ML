@@ -19,6 +19,10 @@ class Settings(BaseSettings):
 
     # Alpha Vantage Configuration
     ALPHAVANTAGE_API_KEY: str = ""
+
+    # SEC (shares outstanding / company facts)
+    # SEC requires a descriptive User-Agent with contact details.
+    SEC_USER_AGENT: str = ""
     
     # Database
     # Default to local Postgres for transactionals (Docker compose above). If you prefer SQLite
@@ -43,6 +47,22 @@ class Settings(BaseSettings):
     # Strategy Selection (controls top_n, direction, risk_per_trade)
     # Options: top5_long, top10_long, top20_both, top50_both
     ORB_STRATEGY: str = "top20_both"
+
+    # Universe selection for live scanning/execution
+    # Options: all, micro, small, large, micro_small, micro_small_unknown, micro_unknown, unknown
+    ORB_UNIVERSE: str = "all"
+
+    # Execution broker
+    # Options: alpaca, tradezero
+    EXECUTION_BROKER: str = "alpaca"
+
+    # TradeZero (Selenium) credentials + execution safety
+    TRADEZERO_USERNAME: str = ""
+    TRADEZERO_PASSWORD: str = ""
+    TRADEZERO_HEADLESS: bool = False
+    TRADEZERO_DRY_RUN: bool = True
+    TRADEZERO_LOCATE_MAX_PPS: float = 0.05  # max $/share for short locates
+    TRADEZERO_DEFAULT_EQUITY: float = 100000.0  # used if we cannot read equity from UI
     
     # Risk Management
     DAILY_LOSS_LIMIT_PCT: float = 0.10    # 10% daily loss limit (kill switch)
@@ -67,6 +87,12 @@ STRATEGY_CONFIGS = {
         "direction": "long",
         "risk_per_trade": 0.02,  # 2% per trade = 10% daily
         "description": "Top 5 LONG only",
+    },
+    "top5_both": {
+        "top_n": 5,
+        "direction": "both",
+        "risk_per_trade": 0.02,  # 2% per trade = 10% daily
+        "description": "Top 5 Long & Short",
     },
     "top10_long": {
         "top_n": 10,

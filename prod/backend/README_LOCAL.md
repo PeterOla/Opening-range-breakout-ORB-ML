@@ -30,3 +30,54 @@ Local development setup (Postgres + DuckDB + Parquet)
 Notes:
 - By default the app uses DuckDB for historical queries (local file `./data/duckdb_local.db`).
 - This setup is local-only; no Neon or cloud storage is required.
+
+---
+
+## TradeZero (local execution)
+
+This repo includes a Selenium-based TradeZero executor under `prod/backend/execution/tradezero/`.
+
+### Install TradeZero deps
+
+From repo root:
+
+    pip install -r prod/backend/execution/tradezero/requirements.txt
+
+### Configure `.env`
+
+Minimum variables:
+
+    EXECUTION_BROKER=tradezero
+    ORB_UNIVERSE=micro_small
+    ORB_STRATEGY=top5_both
+
+    TRADEZERO_USERNAME=...
+    TRADEZERO_PASSWORD=...
+    TRADEZERO_HEADLESS=false
+
+Safety defaults (recommended):
+
+    TRADEZERO_DRY_RUN=true
+    TRADEZERO_LOCATE_MAX_PPS=0.05
+    TRADEZERO_DEFAULT_EQUITY=100000
+
+### Run flow (dry-run first)
+
+1) Run scanner (9:35 ET):
+
+    POST /api/scanner/run
+
+2) Generate signals (Top 5, BOTH):
+
+    POST /api/signals/generate
+
+3) Execute pending signals (TradeZero executor):
+
+    POST /api/signals/execute
+
+Alternative (single command, manual run):
+
+    cd prod/backend
+    python scripts/ORB/run_live_tradezero_once.py
+
+When you are happy with behaviour, set `TRADEZERO_DRY_RUN=false` to place real orders.

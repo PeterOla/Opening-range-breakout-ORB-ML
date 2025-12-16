@@ -19,6 +19,10 @@ Before running the pipeline, ensure:
    - 5-min data: `datetime64[ns, America/New_York]` (timezone-aware)
    - **These are NOT interchangeable** — each has specific requirements
 
+  4. **SEC User-Agent** (required for shares sync)
+    - Set `SEC_USER_AGENT` in `prod/backend/.env` (or your environment)
+    - Example: `SEC_USER_AGENT=ORBResearch/1.0 you@email.com`
+
 ## CLI Reference
 
 ### Command Syntax
@@ -73,6 +77,39 @@ Time: ~1 minute (enrich existing A.parquet)
 python -m DataPipeline.daily_sync --symbols A --log-level DEBUG
 ```
 Outputs: Detailed execution trace to console + logs/
+
+## Shares-Only Sync (Start Shares Fetch)
+
+If you want to fetch shares outstanding **without** running the full Alpaca fetch/enrich pipeline:
+
+```bash
+python -m DataPipeline.run_shares_sync
+```
+
+For specific symbols:
+
+```bash
+python -m DataPipeline.run_shares_sync --symbols AAPL MSFT TSLA
+```
+
+## Missing Shares Ignore List — Instrument Breakdown
+
+If you want to understand how many ignored symbols are likely **ETFs/ETNs/preferreds/units/warrants** (vs real operating companies), run:
+
+```bash
+python scripts/DataPipeline/analyse_missing_shares.py
+```
+
+Optional: probe SEC live for a small sample of ignored tickers to see which now return shares data:
+
+```bash
+python scripts/DataPipeline/analyse_missing_shares.py --probe 60
+```
+
+Outputs:
+- `data/backtest/orb/reports/missing_shares_analysis.md`
+- `data/backtest/orb/reports/assets/missing_shares_categories.png`
+- `data/backtest/orb/reports/assets/probe_hits.csv`
 
 ### Output Files
 

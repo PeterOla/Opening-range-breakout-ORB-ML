@@ -21,14 +21,69 @@ python ORB/build_universe.py --start 2021-01-01 --end 2025-12-31 --workers 4
 ```bash
 python ORB/fast_backtest.py \
   --universe universe_050_20210101_20251205.parquet \
-  --stop-mode or \
   --top-n 20 \
   --side long \
   --run-name orb_long_top20
 ```
 
+### 3. Build Micro+Small Combined Universe (Optional)
+If you already have `universe_micro.parquet` and `universe_small.parquet`, you can derive a combined Micro+Small universe (Top-50/day by RVOL across both):
+
+```bash
+cd prod/backend
+python ORB/build_micro_small_universe.py --out universe_micro_small.parquet
+```
+
+### 3b. Build Micro+Small+Unknown Universe (from scratch)
+If you want a fresh universe that includes Micro + Small + "Unknown" (missing `shares_outstanding`) candidates, build it **from the raw scan** using the canonical builder so it can still reach Top-50/day:
+
+```bash
+cd prod/backend
+python ORB/build_universe.py --start 2021-01-01 --end 2025-12-31 --workers 4 --categories micro_small_unknown
+```
+
+This writes:
+- `data/backtest/orb/universe/universe_micro_small_unknown.parquet`
+
+### 3c. Build Micro+Unknown / Unknown Universes (from scratch)
+To run the additional baseline matrix cases, build these universes from the raw scan (so they remain Top-50/day *within that category*):
+
+```bash
+cd prod/backend
+python ORB/build_universe.py --start 2021-01-01 --end 2025-12-31 --workers 4 --categories micro_unknown unknown
+```
+
+This writes:
+- `data/backtest/orb/universe/universe_micro_unknown.parquet`
+- `data/backtest/orb/universe/universe_unknown.parquet`
+
+### 4. Backtest Micro vs Small vs Micro+Small (Comparison)
+Run the three configurations and generate a comparison markdown:
+
+```bash
+cd prod/backend
+python ORB/run_micro_small_combos.py --top-n 20 --side long --compound --max-pct-volume 0.01
+python ORB/compare_micro_small.py --runs \
+  compound_micro_liquidity_1pct_atr050_long \
+  compound_small_liquidity_1pct_atr050_long \
+  compound_micro_small_liquidity_1pct_atr050_long
+```
+
+Outputs:
+- `data/backtest/orb/universe/universe_micro_small.parquet`
+- `data/backtest/orb/runs/compound/compound_micro_small_liquidity_1pct_atr050_long/`
+- `data/backtest/orb/reports/comparison_micro_small_combo.md`
+
+### 5. Generate `summary.md` for Each Run (Backfill)
+Each run directory contains parquet artefacts; you can generate a human-readable `summary.md` for every run on disk:
+
+```bash
+cd prod/backend
+python ORB/write_run_summaries.py
+```
+
 **Arguments**:
-- `--universe` — Universe parquet filename (from data/backtest/)
+- `--universe` — Universe parquet filename (from `data/backtest/orb/universe/`)
 - `--stop-mode` — `or` (opening range) or `atr` (ATR-based)
 - `--min-atr` — Minimum ATR filter (default: 0.50)
 - `--min-volume` — Minimum volume filter (default: 1M)
@@ -41,8 +96,9 @@ python ORB/fast_backtest.py \
 ## Output
 
 Two parquet files with Top-50 daily candidates:
-- `data/backtest/universe_020_YYYYMMDD_YYYYMMDD.parquet` — ATR ≥ 0.20
-- `data/backtest/universe_050_YYYYMMDD_YYYYMMDD.parquet` — ATR ≥ 0.50
+Saved under `data/backtest/orb/universe/`:
+- `universe_020_YYYYMMDD_YYYYMMDD.parquet` — ATR ≥ 0.20
+- `universe_050_YYYYMMDD_YYYYMMDD.parquet` — ATR ≥ 0.50
 
 ## Strategy Filters
 

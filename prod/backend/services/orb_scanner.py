@@ -7,6 +7,7 @@ ORB Scanner Service (Hybrid: Local Parquet DB + Alpaca Live).
 """
 from datetime import datetime, time, timedelta
 from typing import Optional
+from pathlib import Path
 from zoneinfo import ZoneInfo
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -16,11 +17,53 @@ from db.database import SessionLocal
 from db.models import DailyBar, OpeningRange
 from services.universe import get_data_client, fetch_5min_bars
 from services.data_sync import get_universe_with_metrics
+from core.config import settings
 
 
 ET = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
 OR_END = time(9, 35)
+
+
+def _repo_root() -> Path:
+    # services/orb_scanner.py -> services -> backend -> prod -> repo_root
+    return Path(__file__).resolve().parents[3]
+
+
+def _allowed_symbols_from_universe_setting() -> Optional[set[str]]:
+    key = (getattr(settings, "ORB_UNIVERSE", "all") or "all").strip().lower()
+    if key in {"all", ""}:
+        return None
+
+    universe_file_map = {
+        "micro": "universe_micro.parquet",
+        "small": "universe_small.parquet",
+        "large": "universe_large.parquet",
+        "micro_small": "universe_micro_small.parquet",
+        "micro_small_unknown": "universe_micro_small_unknown.parquet",
+        "micro_unknown": "universe_micro_unknown.parquet",
+        "unknown": "universe_unknown.parquet",
+    }
+    file_name = universe_file_map.get(key)
+    if not file_name:
+        raise ValueError(
+            f"Unknown ORB_UNIVERSE={key}. Valid: {sorted(universe_file_map.keys()) + ['all']}"
+        )
+
+    p1 = _repo_root() / "data" / "backtest" / "orb" / "universe" / file_name
+    p2 = Path("data/backtest/orb/universe") / file_name
+    universe_path = p1 if p1.exists() else p2
+
+    if not universe_path.exists():
+        raise FileNotFoundError(
+            f"Universe file not found for ORB_UNIVERSE={key}: tried {p1} and {p2}"
+        )
+
+    df = pd.read_parquet(universe_path)
+    if "ticker" not in df.columns:
+        raise ValueError(f"Universe parquet missing 'ticker' column: {universe_path}")
+
+    return {str(s).upper().strip() for s in df["ticker"].dropna().unique().tolist()}
 
 
 def get_opening_range_from_bars(df: pd.DataFrame, target_date: Optional[datetime] = None) -> Optional[dict]:
@@ -117,6 +160,8 @@ async def scan_orb_candidates(
     today = datetime.now(ET).date()
     
     try:
+        allowed_symbols = _allowed_symbols_from_universe_setting()
+
         # Step 1: Get universe with pre-computed metrics from DB
         print("Fetching universe from database...")
         universe = get_universe_with_metrics(
@@ -134,10 +179,12 @@ async def scan_orb_candidates(
             }
         
         symbols = [u["symbol"] for u in universe]
+        if allowed_symbols is not None:
+            symbols = [s for s in symbols if s.upper() in allowed_symbols]
         print(f"Universe size after base filters: {len(symbols)} symbols")
         
         # Create lookup for metrics
-        metrics_lookup = {u["symbol"]: u for u in universe}
+        metrics_lookup = {u["symbol"]: u for u in universe if u["symbol"] in set(symbols)}
         
         # Step 2: Fetch today's 5-min bars from Alpaca
         print(f"Fetching 5-min bars for {len(symbols)} symbols (prefer local parquet when available)...")

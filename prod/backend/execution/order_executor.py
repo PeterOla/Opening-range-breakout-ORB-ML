@@ -460,5 +460,11 @@ def get_executor() -> OrderExecutor:
     """Get or create executor singleton."""
     global _executor
     if _executor is None:
-        _executor = OrderExecutor()
+        broker = (getattr(settings, "EXECUTION_BROKER", "alpaca") or "alpaca").lower().strip()
+        if broker == "tradezero":
+            from execution.tradezero.executor import TradeZeroExecutor
+
+            _executor = TradeZeroExecutor()
+        else:
+            _executor = OrderExecutor()
     return _executor

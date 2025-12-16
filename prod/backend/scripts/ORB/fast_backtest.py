@@ -20,6 +20,8 @@ import numpy as np
 from tqdm import tqdm
 import json
 
+from scripts.ORB.analyse_run import write_run_summary_md
+
 # Position sizing
 CAPITAL = 1000.0
 LEVERAGE = 5.0  # Capital.com retail leverage for US shares
@@ -29,10 +31,22 @@ INITIAL_CAPITAL = 1000.0
 SPREAD_PCT = 0.001  # 0.1% per side (0.2% round trip) - Conservative spread betting cost
 
 DATA_DIR = Path(__file__).resolve().parents[4] / "data"
-OUT_DIR = DATA_DIR / "backtest"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+ORB_UNIVERSE_DIR = DATA_DIR / "backtest" / "orb" / "universe"
+ORB_RUNS_DIR = DATA_DIR / "backtest" / "orb" / "runs"
+ORB_RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 OR_START = time(9, 30)
+
+
+def resolve_run_dir(run_name: str, *, compound: bool) -> Path:
+    lowered = (run_name or "").lower()
+    if lowered.startswith(("test_", "exp_", "experiment_", "rc_test_")):
+        group = "experiments"
+    elif compound:
+        group = "compound"
+    else:
+        group = "atr_stop"
+    return ORB_RUNS_DIR / group / run_name
 
 
 def deserialize_bars(bars_data) -> pd.DataFrame:
@@ -351,8 +365,24 @@ def run_strategy(
     
     # Save trades
     df_trades = pd.DataFrame(results)
-    run_dir = OUT_DIR / run_name
+    run_dir = resolve_run_dir(run_name, compound=compound)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save run config for human-readable reporting
+    run_config = {
+        "run_name": run_name,
+        "universe_file": universe_path.name,
+        "min_atr": float(min_atr),
+        "min_volume": int(min_volume),
+        "top_n": int(top_n),
+        "side": side_filter,
+        "compound": bool(compound),
+        "max_pct_volume": float(max_pct_volume),
+        "leverage": float(LEVERAGE),
+        "spread_pct": float(SPREAD_PCT),
+    }
+    (run_dir / "run_config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
+
     trades_path = run_dir / "simulated_trades.parquet"
     df_trades.to_parquet(trades_path, index=False)
     
@@ -388,6 +418,9 @@ def run_strategy(
     df_daily = pd.DataFrame(daily_perf)
     daily_path = run_dir / "daily_performance.parquet"
     df_daily.to_parquet(daily_path, index=False)
+
+    # Write human-readable summary for the run directory
+    write_run_summary_md(run_dir)
     
     # Summary stats
     total_entered = len(entered)
@@ -452,10 +485,15 @@ def main():
     print(f"Risk per trade: {risk_per_trade*100:.2f}% ({args.daily_risk*100:.0f}% daily / {args.top_n} trades)")
     print(f"Filters (Hardcoded): ATR >= {MIN_ATR}, Volume >= {MIN_VOLUME:,}")
     
-    universe_path = OUT_DIR / args.universe
+    # Prefer the new ORB universe location, fallback to legacy data/backtest root
+    universe_path = ORB_UNIVERSE_DIR / args.universe
     if not universe_path.exists():
-        print(f"Universe not found: {universe_path}")
-        return
+        legacy_path = DATA_DIR / "backtest" / args.universe
+        if legacy_path.exists():
+            universe_path = legacy_path
+        else:
+            print(f"Universe not found: {universe_path}")
+            return
     
     run_strategy(
         universe_path,

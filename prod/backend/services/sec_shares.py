@@ -20,12 +20,17 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 import pandas as pd
 import requests
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 SEC_TICKER_CIK_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -33,8 +38,9 @@ SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.jso
 
 
 def _repo_root() -> Path:
-    # .../prod/backend/services/sec_shares.py -> repo root is 4 parents up
-    return Path(__file__).resolve().parents[4]
+    # .../prod/backend/services/sec_shares.py -> repo root is 3 parents up
+    # parents[0]=services, [1]=backend, [2]=prod, [3]=<repo root>
+    return Path(__file__).resolve().parents[3]
 
 
 def _data_raw_dir() -> Path:
@@ -126,7 +132,24 @@ class SecSharesClient:
             return json.loads(cache_path.read_text(encoding="utf-8"))
 
         url = SEC_COMPANY_FACTS_URL.format(cik=cik)
-        data = self._get_json(url, host="data.sec.gov")
+        try:
+            data = self._get_json(url, host="data.sec.gov")
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", None)
+            if status == 404:
+                # Some CIKs in the ticker map have no companyfacts payload.
+                # Cache this negative lookup to avoid repeated fetches.
+                payload = {
+                    "_error": "companyfacts_not_found",
+                    "cik": cik,
+                    "url": url,
+                    "fetched_at": datetime.utcnow().isoformat() + "Z",
+                }
+                cache_path.write_text(json.dumps(payload), encoding="utf-8")
+                logger.debug(f"SEC companyfacts 404 for CIK{cik}")
+                return {}
+            raise
+
         cache_path.write_text(json.dumps(data), encoding="utf-8")
         # Be polite to SEC (avoid hammering endpoints)
         if polite_sleep_s:

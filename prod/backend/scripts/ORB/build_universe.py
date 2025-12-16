@@ -36,12 +36,22 @@ import gc
 DATA_DIR = Path(__file__).resolve().parents[4] / "data"
 DATA_DIR_5MIN = DATA_DIR / "processed" / "5min"
 DATA_DIR_DAILY = DATA_DIR / "processed" / "daily"
-OUT_DIR = DATA_DIR / "backtest"
+OUT_DIR = DATA_DIR / "backtest" / "orb" / "universe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OR_START = time(9, 30)
 OR_END = time(16, 0)    # 4:00 PM ET closing time
-TOP_N = 50  # Save Top-50 per day
+
+
+ALL_CATEGORIES = [
+    "micro",
+    "small",
+    "large",
+    "all",
+    "unknown",
+    "micro_unknown",
+    "micro_small_unknown",
+]
 
 
 def list_trading_days(start: str, end: str) -> List[date]:
@@ -231,7 +241,15 @@ def process_symbol_bulk(symbol: str, start_date: date, end_date: date, min_price
     return candidates
 
 
-def build_universe_bulk(start: str, end: str, min_price: float, min_volume: int, workers: int = 1):
+def build_universe_bulk(
+    start: str,
+    end: str,
+    min_price: float,
+    min_volume: int,
+    workers: int = 1,
+    top_n: int = 50,
+    categories: Optional[List[str]] = None,
+):
     """Build universe using efficient symbol-centric processing in yearly chunks."""
     start_dt = pd.Timestamp(start).date()
     end_dt = pd.Timestamp(end).date()
@@ -239,12 +257,24 @@ def build_universe_bulk(start: str, end: str, min_price: float, min_volume: int,
     # Generate yearly chunks
     years = range(start_dt.year, end_dt.year + 1)
     
-    universe_files = {
-        'micro': OUT_DIR / "universe_micro.parquet",
-        'small': OUT_DIR / "universe_small.parquet",
-        'large': OUT_DIR / "universe_large.parquet",
-        'all': OUT_DIR / "universe_all.parquet"
+    all_universe_files = {
+        "micro": OUT_DIR / "universe_micro.parquet",
+        "small": OUT_DIR / "universe_small.parquet",
+        "large": OUT_DIR / "universe_large.parquet",
+        "all": OUT_DIR / "universe_all.parquet",
+        "unknown": OUT_DIR / "universe_unknown.parquet",
+        "micro_unknown": OUT_DIR / "universe_micro_unknown.parquet",
+        "micro_small_unknown": OUT_DIR / "universe_micro_small_unknown.parquet",
     }
+
+    if categories is None:
+        categories = ["micro", "small", "large", "all"]
+    categories = list(categories)
+    invalid = [c for c in categories if c not in ALL_CATEGORIES]
+    if invalid:
+        raise ValueError(f"Invalid categories: {invalid}. Allowed: {ALL_CATEGORIES}")
+
+    universe_files = {k: all_universe_files[k] for k in categories}
     
     symbols = [p.stem for p in DATA_DIR_DAILY.glob("*.parquet")]
     print(f"Processing {len(symbols)} symbols from {start} to {end}")
@@ -290,29 +320,47 @@ def build_universe_bulk(start: str, end: str, min_price: float, min_volume: int,
         for trade_date, group in df_all.groupby('trade_date'):
             # Sort by RVOL
             group = group.sort_values('rvol', ascending=False)
-            
-            # All
-            top_all = group.head(TOP_N).copy()
-            top_all['rvol_rank'] = range(1, len(top_all) + 1)
-            results['all'].append(top_all)
-            
-            # Micro (<50M)
-            micro = group[group['shares_outstanding'] < 50_000_000]
-            top_micro = micro.head(TOP_N).copy()
-            top_micro['rvol_rank'] = range(1, len(top_micro) + 1)
-            results['micro'].append(top_micro)
-            
-            # Small (50M-150M)
-            small = group[(group['shares_outstanding'] >= 50_000_000) & (group['shares_outstanding'] < 150_000_000)]
-            top_small = small.head(TOP_N).copy()
-            top_small['rvol_rank'] = range(1, len(top_small) + 1)
-            results['small'].append(top_small)
-            
-            # Large (>=150M)
-            large = group[group['shares_outstanding'] >= 150_000_000]
-            top_large = large.head(TOP_N).copy()
-            top_large['rvol_rank'] = range(1, len(top_large) + 1)
-            results['large'].append(top_large)
+
+            if 'all' in results:
+                top_all = group.head(top_n).copy()
+                top_all['rvol_rank'] = range(1, len(top_all) + 1)
+                results['all'].append(top_all)
+
+            if 'unknown' in results:
+                unknown = group[pd.isna(group['shares_outstanding'])]
+                top_unknown = unknown.head(top_n).copy()
+                top_unknown['rvol_rank'] = range(1, len(top_unknown) + 1)
+                results['unknown'].append(top_unknown)
+
+            if 'micro_unknown' in results:
+                micro_unknown = group[(group['shares_outstanding'] < 50_000_000) | (pd.isna(group['shares_outstanding']))]
+                top_micro_unknown = micro_unknown.head(top_n).copy()
+                top_micro_unknown['rvol_rank'] = range(1, len(top_micro_unknown) + 1)
+                results['micro_unknown'].append(top_micro_unknown)
+
+            if 'micro' in results:
+                micro = group[group['shares_outstanding'] < 50_000_000]
+                top_micro = micro.head(top_n).copy()
+                top_micro['rvol_rank'] = range(1, len(top_micro) + 1)
+                results['micro'].append(top_micro)
+
+            if 'small' in results:
+                small = group[(group['shares_outstanding'] >= 50_000_000) & (group['shares_outstanding'] < 150_000_000)]
+                top_small = small.head(top_n).copy()
+                top_small['rvol_rank'] = range(1, len(top_small) + 1)
+                results['small'].append(top_small)
+
+            if 'large' in results:
+                large = group[group['shares_outstanding'] >= 150_000_000]
+                top_large = large.head(top_n).copy()
+                top_large['rvol_rank'] = range(1, len(top_large) + 1)
+                results['large'].append(top_large)
+
+            if 'micro_small_unknown' in results:
+                msu = group[(group['shares_outstanding'] < 150_000_000) | (pd.isna(group['shares_outstanding']))]
+                top_msu = msu.head(top_n).copy()
+                top_msu['rvol_rank'] = range(1, len(top_msu) + 1)
+                results['micro_small_unknown'].append(top_msu)
 
         # 3. Save/Append
         for cat, dfs in results.items():
@@ -350,11 +398,27 @@ def main():
     ap.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)')
     ap.add_argument('--min-price', type=float, default=5.0, help='Minimum share price (default: $5.00)')
     ap.add_argument('--min-volume', type=int, default=1_000_000, help='Minimum avg volume (default: 1M)')
+    ap.add_argument('--top-n', type=int, default=50, help='Top N candidates per day (default: 50)')
+    ap.add_argument(
+        '--categories',
+        nargs='+',
+        default=['micro', 'small', 'large', 'all'],
+        choices=ALL_CATEGORIES,
+        help='Which universes to build (default: micro small large all)'
+    )
     ap.add_argument('--workers', type=int, default=max(1, multiprocessing.cpu_count() - 1),
                     help='Parallel workers (default: CPU count - 1)')
     args = ap.parse_args()
-    
-    build_universe_bulk(args.start, args.end, args.min_price, args.min_volume, args.workers)
+
+    build_universe_bulk(
+        args.start,
+        args.end,
+        args.min_price,
+        args.min_volume,
+        args.workers,
+        top_n=args.top_n,
+        categories=args.categories,
+    )
 
 
 if __name__ == "__main__":
