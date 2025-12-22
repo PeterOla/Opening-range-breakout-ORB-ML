@@ -9,15 +9,11 @@ from datetime import datetime, time, timedelta
 from typing import Optional
 from pathlib import Path
 from zoneinfo import ZoneInfo
+import duckdb
 import pandas as pd
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
-
-from db.database import SessionLocal, Base, engine
-from db.models import DailyBar, OpeningRange
-from services.universe import get_data_client, fetch_5min_bars
-from services.data_sync import get_universe_with_metrics
 from core.config import settings
+from services.universe import fetch_5min_bars
+from state.duckdb_store import DuckDBStateStore
 
 
 ET = ZoneInfo("America/New_York")
@@ -135,6 +131,72 @@ def compute_rvol(or_volume: float, avg_volume: float) -> Optional[float]:
     return extrapolated_daily / avg_volume
 
 
+def _get_universe_with_metrics_from_local_parquet(
+    min_price: float,
+    min_atr: float,
+    min_avg_volume: float,
+    allowed_symbols: Optional[set[str]] = None,
+) -> list[dict]:
+    """Return latest daily metrics per symbol from local Parquet using DuckDB."""
+    base = Path(getattr(settings, "PARQUET_BASE_PATH", "./data/processed"))
+    glob_path = str((base / "daily" / "*.parquet").as_posix())
+
+    con = duckdb.connect(str(getattr(settings, "DUCKDB_PATH", "./data/duckdb_local.db")))
+    try:
+        allowed_df = None
+        if allowed_symbols is not None:
+            allowed = [str(s).upper().strip() for s in allowed_symbols if s]
+            if allowed:
+                allowed_df = pd.DataFrame({"symbol": allowed})
+                con.register("allowed_symbols", allowed_df)
+
+        q = """
+            WITH raw AS (
+                SELECT symbol, date, close, atr_14, avg_volume_14
+                FROM read_parquet(?, hive_partitioning=false)
+            ),
+            latest AS (
+                SELECT
+                    symbol,
+                    max(date) AS date,
+                    arg_max(close, date) AS close,
+                    arg_max(atr_14, date) AS atr_14,
+                    arg_max(avg_volume_14, date) AS avg_volume_14
+                FROM raw
+                GROUP BY symbol
+            )
+            SELECT l.symbol, l.date, l.close, l.atr_14, l.avg_volume_14
+            FROM latest l
+        """
+
+        if allowed_df is not None and not allowed_df.empty:
+            q += " JOIN allowed_symbols a ON a.symbol = l.symbol "
+
+        q += """
+            WHERE l.close >= ?
+              AND l.atr_14 >= ?
+              AND l.avg_volume_14 >= ?
+        """
+
+        df = con.execute(q, [glob_path, float(min_price), float(min_atr), float(min_avg_volume)]).fetchdf()
+        if df is None or df.empty:
+            return []
+
+        df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+        return [
+            {
+                "symbol": row["symbol"],
+                "date": row["date"],
+                "close": float(row["close"]),
+                "atr_14": float(row["atr_14"]),
+                "avg_volume_14": float(row["avg_volume_14"]),
+            }
+            for _, row in df.iterrows()
+        ]
+    finally:
+        con.close()
+
+
 async def scan_orb_candidates(
     min_price: float = 5.0,
     min_atr: float = 0.50,
@@ -156,29 +218,25 @@ async def scan_orb_candidates(
     Returns:
         Dict with scan results and candidates
     """
-    # Ensure local sqlite DB has tables even in "scan-only" runs.
-    Base.metadata.create_all(bind=engine)
-
-    db = SessionLocal()
-    today = datetime.now(ET).date()
+    now_et = datetime.now(ET)
+    today = now_et.date()
     
     try:
         allowed_symbols = _allowed_symbols_from_universe_setting()
 
-        # Step 1: Get universe with pre-computed metrics from DB, or fall back to local Parquet.
-        print("Fetching universe (DB preferred; Parquet fallback)...")
-        universe = get_universe_with_metrics(
+        # Step 1: Get universe with pre-computed metrics from local Parquet via DuckDB.
+        print("Fetching universe (Parquet + DuckDB)...")
+        universe = _get_universe_with_metrics_from_local_parquet(
             min_price=min_price,
             min_atr=min_atr,
             min_avg_volume=min_avg_volume,
             allowed_symbols=allowed_symbols,
-            db=db,
         )
         
         if not universe:
             return {
                 "status": "error",
-                "error": "No symbols pass base filters (DB/Parquet). Check daily Parquet metrics and thresholds.",
+                "error": "No symbols pass base filters (Parquet/DuckDB). Check daily Parquet metrics and thresholds.",
                 "candidates": [],
             }
         
@@ -270,32 +328,23 @@ async def scan_orb_candidates(
 
         top_candidates = candidates[:top_n]
 
-        # Step 6: Save to database if requested
+        # Step 6: Save to DuckDB state store if requested
         if save_to_db and candidates:
-            for c in candidates:  # Save all candidates, not just top N
-                or_record = OpeningRange(
-                    symbol=c["symbol"],
-                    date=today,
-                    or_open=c["or_open"],
-                    or_high=c["or_high"],
-                    or_low=c["or_low"],
-                    or_close=c["or_close"],
-                    or_volume=c["or_volume"],
-                    direction=c["direction"],
-                    rvol=c["rvol"],
-                    atr=c["atr"],
-                    avg_volume=c["avg_volume"],
-                    passed_filters=c["rank"] <= top_n,
-                    rank=c["rank"] if c["rank"] <= top_n else None,
-                    entry_price=c["entry_price"],
-                    stop_price=c["stop_price"],
-                    signal_generated=False,
-                    order_placed=False,
-                )
-                db.add(or_record)
-
-            db.commit()
-            print(f"Saved {len(candidates)} candidates to opening_ranges table")
+            store = DuckDBStateStore()
+            store.replace_opening_ranges(
+                target_date=today,
+                candidates=[
+                    {
+                        **c,
+                        "passed_filters": bool(c.get("rank") and c["rank"] <= top_n),
+                        "rank": int(c["rank"]) if c.get("rank") and c["rank"] <= top_n else None,
+                        "signal_generated": False,
+                        "order_placed": False,
+                    }
+                    for c in candidates
+                ],
+            )
+            print(f"Saved {len(candidates)} candidates to DuckDB state store")
         
         return {
             "status": "success",
@@ -315,15 +364,11 @@ async def scan_orb_candidates(
         }
     
     except Exception as e:
-        db.rollback()
         return {
             "status": "error",
             "error": str(e),
             "candidates": [],
         }
-    
-    finally:
-        db.close()
 
 
 async def get_todays_candidates(top_n: int = 20, direction: str = "both") -> list[dict]:
@@ -334,46 +379,12 @@ async def get_todays_candidates(top_n: int = 20, direction: str = "both") -> lis
         top_n: Maximum number of candidates to return
         direction: Filter by direction - 'long', 'short', or 'both'
     """
-    db = SessionLocal()
-    today = datetime.now(ET).date()
-    
-    try:
-        # Build base query
-        filters = [
-            OpeningRange.date == today,
-            OpeningRange.passed_filters == True,
-        ]
-        
-        # Add direction filter if not 'both'
-        if direction == "long":
-            filters.append(OpeningRange.direction == 1)
-        elif direction == "short":
-            filters.append(OpeningRange.direction == -1)
-        
-        candidates = db.query(OpeningRange).filter(
-            and_(*filters)
-        ).order_by(OpeningRange.rank.asc()).limit(top_n).all()
-        
-        return [
-            {
-                "symbol": c.symbol,
-                "rank": c.rank,
-                "direction": c.direction,
-                "direction_label": "LONG" if c.direction == 1 else "SHORT",
-                "rvol": c.rvol,
-                "atr": c.atr,
-                "entry_price": c.entry_price,
-                "stop_price": c.stop_price,
-                "or_high": c.or_high,
-                "or_low": c.or_low,
-                "signal_generated": c.signal_generated,
-                "order_placed": c.order_placed,
-            }
-            for c in candidates
-        ]
-    
-    finally:
-        db.close()
+    store = DuckDBStateStore()
+    candidates = store.get_todays_candidates(top_n=int(top_n), direction=str(direction or "both"))
+    for c in candidates:
+        d = c.get("direction")
+        c["direction_label"] = "LONG" if d == 1 else "SHORT" if d == -1 else None
+    return candidates
 
 
 async def get_todays_candidates_with_live_pnl(top_n: int = 20) -> list[dict]:
@@ -387,32 +398,23 @@ async def get_todays_candidates_with_live_pnl(top_n: int = 20) -> list[dict]:
     
     Position sizing: $1000 capital, 1% risk, 2x max leverage
     """
-    from alpaca.data.live import StockDataStream
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
     from core.config import settings
-    
-    db = SessionLocal()
+
     today = datetime.now(ET).date()
     
     # Position sizing constants - Fixed 2x leverage
     CAPITAL = 1000.0
     
     try:
-        # Get today's candidates
-        candidates = db.query(OpeningRange).filter(
-            and_(
-                OpeningRange.date == today,
-                OpeningRange.passed_filters == True,
-            )
-        ).order_by(OpeningRange.rank.asc()).limit(top_n).all()
-        
+        store = DuckDBStateStore()
+        candidates = store.get_todays_candidates(top_n=int(top_n), direction="both")
         if not candidates:
             return []
-        
-        # Get symbols
-        symbols = [c.symbol for c in candidates]
+
+        symbols = [str(c.get("symbol", "")).upper().strip() for c in candidates if c.get("symbol")]
         
         # Fetch current prices from Alpaca
         data_client = StockHistoricalDataClient(
@@ -447,10 +449,10 @@ async def get_todays_candidates_with_live_pnl(top_n: int = 20) -> list[dict]:
         results = []
         
         for c in candidates:
-            symbol = c.symbol
-            entry_price = c.entry_price
-            stop_price = c.stop_price
-            direction = c.direction
+            symbol = str(c.get("symbol", "")).upper().strip()
+            entry_price = float(c.get("entry_price") or 0)
+            stop_price = float(c.get("stop_price") or 0)
+            direction = int(c.get("direction") or 0)
             
             # Get current price
             current_price = None
@@ -533,15 +535,15 @@ async def get_todays_candidates_with_live_pnl(top_n: int = 20) -> list[dict]:
             
             results.append({
                 "symbol": symbol,
-                "rank": c.rank,
+                "rank": c.get("rank"),
                 "direction": direction,
                 "direction_label": "LONG" if direction == 1 else "SHORT",
-                "rvol": c.rvol,
-                "atr": c.atr,
+                "rvol": c.get("rvol"),
+                "atr": c.get("atr"),
                 "entry_price": entry_price,
                 "stop_price": stop_price,
-                "or_high": c.or_high,
-                "or_low": c.or_low,
+                "or_high": c.get("or_high"),
+                "or_low": c.get("or_low"),
                 "current_price": round(current_price, 2) if current_price else None,
                 "entered": entered,
                 "entry_time": entry_time,
@@ -561,4 +563,4 @@ async def get_todays_candidates_with_live_pnl(top_n: int = 20) -> list[dict]:
         return results
     
     finally:
-        db.close()
+        pass

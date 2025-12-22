@@ -60,13 +60,18 @@ Note:
 - When `TRADEZERO_DRY_RUN=true`, credentials are optional (useful for a local smoke test of scan/signal sizing/order formatting).
 - When `TRADEZERO_DRY_RUN=false`, credentials are required and Selenium will log in to TradeZero.
 
-Safety defaults (recommended):
+Defaults:
 
-    TRADEZERO_DRY_RUN=true
+    TRADEZERO_DRY_RUN=false
     TRADEZERO_LOCATE_MAX_PPS=0.05
     TRADEZERO_DEFAULT_EQUITY=100000
 
-### Run flow (dry-run first)
+Protective stop behaviour (live only):
+- When `TRADEZERO_DRY_RUN=false`, after submitting an entry the executor will attempt to place a protective Stop order using the signal's `stop_price`.
+- If a position is detected but the Stop cannot be placed, it triggers the file-based kill switch (`KILL_SWITCH_FILE`) and attempts to cancel orders + flatten positions.
+- Stop placement is best-effort UI automation and may require adjusting selectors per TradeZero portal.
+
+### Run flow
 
 1) Run scanner (9:35 ET):
 
@@ -85,4 +90,4 @@ Alternative (single command, manual run):
     cd prod/backend
     python scripts/ORB/run_live_tradezero_once.py
 
-When you are happy with behaviour, set `TRADEZERO_DRY_RUN=false` to place real orders.
+If you want to simulate without placing orders, set `TRADEZERO_DRY_RUN=true`.

@@ -7,10 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.routes import positions, account, trades, signals, metrics, system, scanner, execution
+from api.routes import positions, account, trades, signals, metrics, system, execution
 from api.websocket import router as ws_router
-from routers.analytics import router as analytics_router
-from db.database import engine, Base
 from core.config import settings
 from services.scheduler import start_scheduler, stop_scheduler
 
@@ -30,18 +28,22 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting ORB Trading System")
     logger.info(f"Paper Mode: {settings.ALPACA_PAPER}")
-    logger.info(f"Database: {settings.DATABASE_URL}")
-    
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created")
+    logger.info(f"State Store: {getattr(settings, 'STATE_STORE', 'duckdb')}")
+    if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() != "duckdb":
+        logger.info(f"Database: {settings.DATABASE_URL}")
+
+        from db.database import engine, Base
+
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created")
     
     # Start EOD scheduler
     start_scheduler()
     logger.info("EOD scheduler started")
     
     # Check if we need initial data sync
-    asyncio.create_task(_check_and_sync_data())
+    if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() != "duckdb":
+        asyncio.create_task(_check_and_sync_data())
     
     yield
     
@@ -126,10 +128,21 @@ app.include_router(trades.router, prefix="/api", tags=["Trades"])
 app.include_router(signals.router, prefix="/api", tags=["Signals"])
 app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
 app.include_router(system.router, prefix="/api/system", tags=["System"])
+
+# Scanner router depends on STATE_STORE.
+if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() == "duckdb":
+    from api.routes import scanner_duckdb as scanner
+else:
+    from api.routes import scanner
+
 app.include_router(scanner.router, prefix="/api", tags=["Scanner"])
 app.include_router(execution.router, prefix="/api", tags=["Execution"])
 app.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
-app.include_router(analytics_router, tags=["Analytics"])
+
+if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() != "duckdb":
+    from routers.analytics import router as analytics_router
+
+    app.include_router(analytics_router, tags=["Analytics"])
 
 
 @app.get("/")
@@ -147,7 +160,8 @@ async def health_check():
     """Detailed health check."""
     return {
         "status": "healthy",
-        "database": "connected",
+        "state_store": (getattr(settings, "STATE_STORE", "duckdb") or "duckdb"),
+        "database": "disabled" if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() == "duckdb" else "enabled",
         "alpaca": "connected" if settings.ALPACA_API_KEY else "not_configured"
     }
 

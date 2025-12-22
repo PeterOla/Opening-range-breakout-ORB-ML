@@ -21,13 +21,14 @@ from tqdm import tqdm
 import json
 
 from scripts.ORB.analyse_run import write_run_summary_md
+from core.config import settings
 
 # Position sizing
-CAPITAL = 1000.0
-LEVERAGE = 5.0  # Capital.com retail leverage for US shares
+CAPITAL = settings.TRADING_CAPITAL
+LEVERAGE = settings.FIXED_LEVERAGE
 
 # Compounding settings
-INITIAL_CAPITAL = 1000.0
+INITIAL_CAPITAL = settings.TRADING_CAPITAL
 SPREAD_PCT = 0.001  # 0.1% per side (0.2% round trip) - Conservative spread betting cost
 
 DATA_DIR = Path(__file__).resolve().parents[4] / "data"

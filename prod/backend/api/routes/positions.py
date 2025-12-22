@@ -1,12 +1,9 @@
 """
 Positions API endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException
 from typing import List
 
-from db.database import get_db
-from db.models import Trade, PositionStatus
 from execution.alpaca_client import get_alpaca_client
 from shared.schemas import PositionResponse
 
@@ -14,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/positions", response_model=List[PositionResponse])
-async def get_open_positions(db: Session = Depends(get_db)):
+async def get_open_positions():
     """Get all open positions from Alpaca and database."""
     try:
         # Get live positions from Alpaca
@@ -41,7 +38,7 @@ async def get_open_positions(db: Session = Depends(get_db)):
 
 
 @router.get("/positions/{ticker}", response_model=PositionResponse)
-async def get_position(ticker: str, db: Session = Depends(get_db)):
+async def get_position(ticker: str):
     """Get specific position by ticker."""
     try:
         client = get_alpaca_client()
@@ -62,7 +59,7 @@ async def get_position(ticker: str, db: Session = Depends(get_db)):
 
 
 @router.post("/positions/{ticker}/close")
-async def close_position(ticker: str, db: Session = Depends(get_db)):
+async def close_position(ticker: str):
     """Manually close a position."""
     try:
         client = get_alpaca_client()

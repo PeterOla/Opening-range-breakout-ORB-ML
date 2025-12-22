@@ -29,11 +29,7 @@ from alpaca.trading.enums import (
     QueryOrderStatus,
     OrderClass,
 )
-from sqlalchemy.orm import Session
-
-from db.database import SessionLocal
-from db.models import Signal, Trade, OpeningRange, OrderSide, OrderStatus, PositionStatus
-from core.config import settings
+from core.config import settings, get_strategy_config
 from execution.alpaca_client import get_alpaca_client
 
 
@@ -43,56 +39,67 @@ ET = ZoneInfo("America/New_York")
 def calculate_position_size(
     entry_price: float,
     stop_price: float,
+    capital: Optional[float] = None,
 ) -> dict:
     """
     Calculate position size with fixed leverage from settings.
     
-    Uses risk-based sizing: shares = risk_dollars / stop_distance
-    Caps at max leverage to prevent over-exposure.
+    Uses EQUAL DOLLAR ALLOCATION: shares = (Capital / Top_N * Leverage) / Entry
+    Matches fast_backtest.py logic.
     
     Returns:
         dict with shares, position_value, leverage_used, capped
     """
-    capital = settings.TRADING_CAPITAL
-    leverage = settings.FIXED_LEVERAGE
-    risk_pct = settings.RISK_PER_TRADE_PCT
+    # If capital not provided, try to fetch live equity and buying power
+    buying_power = 0.0
+    if capital is None:
+        try:
+            # Use the global get_executor function to fetch live account data
+            executor = get_executor()
+            account = executor.get_account()
+            capital = float(account.get("equity", 0))
+            buying_power = float(account.get("buying_power", 0))
+        except Exception:
+            pass
+
+    # Fallback to settings if fetch failed or 0
+    if not capital or capital <= 0:
+        capital = settings.TRADING_CAPITAL
+
+    # Determine leverage:
+    # 1. If we have live buying power > equity, calculate real leverage
+    # 2. Otherwise fallback to FIXED_LEVERAGE setting
+    if buying_power > capital:
+        leverage = buying_power / capital
+    else:
+        leverage = settings.FIXED_LEVERAGE
     
-    # Risk in dollars
-    risk_dollars = capital * risk_pct
+    # Get Top N from strategy config
+    strategy = get_strategy_config()
+    top_n = int(strategy["top_n"])
     
-    # Stop distance
+    # Allocation per trade (unleveraged)
+    allocation = capital / top_n
+    
+    # Target position value (leveraged)
+    target_value = allocation * leverage
+    
+    # Apply hard cap if set
+    if settings.MAX_POSITION_DOLLAR_LIMIT > 0:
+        target_value = min(target_value, settings.MAX_POSITION_DOLLAR_LIMIT)
+    
+    # Shares
+    shares = int(target_value / entry_price) if entry_price > 0 else 0
+    
+    # Stats
+    position_value = shares * entry_price
+    actual_leverage = position_value / capital if capital > 0 else 0
     stop_distance = abs(entry_price - stop_price)
     stop_distance_pct = stop_distance / entry_price * 100 if entry_price > 0 else 0
-    
-    # Shares based on risk
-    shares_by_risk = int(risk_dollars / stop_distance) if stop_distance > 0 else 0
-    
-    # Position value
-    position_value = shares_by_risk * entry_price
-    
-    # Actual leverage used
-    actual_leverage = position_value / capital if capital > 0 else 0
-    
-    # Check if within leverage limit
-    max_position_value = capital * leverage
-    
-    if position_value > max_position_value:
-        # Cap at max leverage
-        shares_capped = int(max_position_value / entry_price)
-        position_value_capped = shares_capped * entry_price
-        actual_leverage_capped = position_value_capped / capital
-        
-        return {
-            "shares": shares_capped,
-            "position_value": round(position_value_capped, 2),
-            "leverage_used": round(actual_leverage_capped, 2),
-            "capped": True,
-            "stop_distance_pct": round(stop_distance_pct, 2),
-            "risk_dollars": round(risk_dollars, 2),
-        }
+    risk_dollars = shares * stop_distance # Actual dollar risk taken
     
     return {
-        "shares": shares_by_risk,
+        "shares": shares,
         "position_value": round(position_value, 2),
         "leverage_used": round(actual_leverage, 2),
         "capped": False,
@@ -191,50 +198,13 @@ class OrderExecutor:
                 from services.signal_engine import update_signal_status
                 update_signal_status(
                     signal_id=signal_id,
-                    status=OrderStatus.PENDING,
-                    order_id=order.id,
+                    status="PENDING",
+                    order_id=str(order.id),
                 )
-            
-            # Create trade record
-            db = SessionLocal()
-            try:
-                # Note: Using fields that exist in production DB
-                trade = Trade(
-                    timestamp=datetime.now(ET),  # Legacy column name
-                    ticker=symbol,
-                    side=OrderSide.LONG if side == "LONG" else OrderSide.SHORT,
-                    entry_price=entry_price,
-                    shares=shares,
-                    stop_price=stop_price,
-                    status=PositionStatus.PENDING,  # Pending until order fills
-                    alpaca_order_id=str(order.id),
-                    entry_time=datetime.now(ET),
-                )
-                db.add(trade)
-                db.commit()
-                trade_id = trade.id
-            except Exception as db_error:
-                # Order placed successfully, just DB logging failed
-                db.rollback()
-                return {
-                    "status": "submitted",
-                    "order_id": str(order.id),
-                    "trade_id": None,
-                    "db_error": str(db_error),
-                    "symbol": symbol,
-                    "side": side,
-                    "shares": shares,
-                    "entry_price": entry_price,
-                    "stop_price": stop_price,
-                    "order_status": order.status.value,
-                }
-            finally:
-                db.close()
             
             return {
                 "status": "submitted",
                 "order_id": order.id,
-                "trade_id": trade_id,
                 "symbol": symbol,
                 "side": side,
                 "shares": shares,
@@ -249,7 +219,7 @@ class OrderExecutor:
                 from services.signal_engine import update_signal_status
                 update_signal_status(
                     signal_id=signal_id,
-                    status=OrderStatus.REJECTED,
+                    status="REJECTED",
                     rejection_reason=str(e),
                 )
             
@@ -419,30 +389,14 @@ def flatten_eod() -> dict:
     End-of-day position flattening.
     Call this at 3:55 PM ET to close all positions before market close.
     """
-    executor = OrderExecutor()
+    # Important: use the configured broker (alpaca/tradezero).
+    executor = get_executor()
     
     # First cancel all open orders
     cancel_result = executor.cancel_all_orders()
     
     # Then close all positions
     close_result = executor.close_all_positions()
-    
-    # Update trade records
-    db = SessionLocal()
-    try:
-        # Mark all open trades as closed
-        open_trades = db.query(Trade).filter(
-            Trade.status == PositionStatus.OPEN
-        ).all()
-        
-        for trade in open_trades:
-            trade.status = PositionStatus.CLOSED
-            trade.exit_time = datetime.now(ET)
-            # Note: actual exit price will be filled by fill handler
-        
-        db.commit()
-    finally:
-        db.close()
     
     return {
         "status": "success",

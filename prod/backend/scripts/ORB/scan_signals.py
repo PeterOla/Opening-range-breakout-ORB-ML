@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import duckdb
 from datetime import datetime, timedelta
+from core.config import settings, get_strategy_config
 
 # Setup paths
 BASE_DIR = Path(__file__).resolve().parents[4]
@@ -27,9 +28,13 @@ def load_ticker_info():
     print("Warning: Could not find shares_outstanding in active_tickers.csv")
     return pd.DataFrame(columns=['ticker', 'shares_outstanding', 'name'])
 
-def scan_market(min_atr=0.50, min_volume=100_000, top_n=20):
+def scan_market(min_atr=0.50, min_volume=100_000, top_n=None):
     """Scan the local data for the latest trading signals."""
     
+    if top_n is None:
+        strategy = get_strategy_config()
+        top_n = int(strategy["top_n"])
+
     print(f"Scanning local data in {DAILY_DIR}...")
     
     # Use DuckDB to query the latest date across all parquet files
@@ -90,28 +95,31 @@ def scan_market(min_atr=0.50, min_volume=100_000, top_n=20):
     #     df_candidates['shares_outstanding'] = 0 # Default to 0 if missing
     df_candidates['name'] = 'Unknown' # Name not in daily parquet
 
-    # 4. Filter for Micro Caps (< 50M shares)
-    # Note: Using Shares Outstanding as proxy for Market Cap/Float since price varies
-    # Micro Cap definition varies, but <50M shares * $5 price = $250M cap. 
-    # The user's "Micro" universe used < 50M shares.
+    # 4. Filter based on Universe Settings
+    universe_mode = settings.ORB_UNIVERSE.lower()
     
-    df_micro = df_candidates[df_candidates['shares_outstanding'] < 50_000_000].copy()
-    
-    print(f"Found {len(df_micro)} Micro-Cap candidates (<50M shares).")
+    if universe_mode in ("micro", "micro_small"):
+        # Micro Cap definition: < 50M shares (approx <$250M cap)
+        df_filtered = df_candidates[df_candidates['shares_outstanding'] < 50_000_000].copy()
+        print(f"Filtered for Micro Caps (<50M shares) [Mode: {universe_mode}]. Found {len(df_filtered)}.")
+    else:
+        # Default to ALL (or apply other logic for 'large', etc. if defined)
+        df_filtered = df_candidates.copy()
+        print(f"Universe: {universe_mode.upper()} (No share count filter). Found {len(df_filtered)}.")
     
     # 5. Rank by RVOL
-    df_micro = df_micro.sort_values('rvol', ascending=False).head(top_n)
+    df_final = df_filtered.sort_values('rvol', ascending=False).head(top_n)
     
     # 6. Output
     print(f"\n{'='*80}")
     print(f"🚀 WATCHLIST FOR NEXT SESSION (Based on Data from {latest_date})")
-    print(f"Criteria: Micro Cap (<50M Shares), ATR >= {min_atr}, Vol >= {min_volume:,}, Top {top_n} RVOL")
+    print(f"Criteria: Universe={universe_mode}, ATR >= {min_atr}, Vol >= {min_volume:,}, Top {top_n} RVOL")
     print(f"{'='*80}")
     
     cols = ['ticker', 'close', 'atr_14', 'volume', 'rvol', 'shares_outstanding', 'name']
     
     # Format for display
-    display_df = df_micro.copy()
+    display_df = df_final.copy()
     display_df['volume'] = display_df['volume'].apply(lambda x: f"{x:,.0f}")
     display_df['shares_outstanding'] = display_df['shares_outstanding'].apply(lambda x: f"{x/1_000_000:.1f}M" if pd.notnull(x) else "N/A")
     display_df['rvol'] = display_df['rvol'].apply(lambda x: f"{x:.1f}x")

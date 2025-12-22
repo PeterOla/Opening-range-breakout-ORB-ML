@@ -1,19 +1,18 @@
 """
 System control API endpoints.
 """
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from fastapi import APIRouter, HTTPException, Query
 from typing import List
 from pathlib import Path
-
-from db.database import get_db
-from db.models import SystemLog, LogLevel
 from shared.schemas import LogResponse, KillSwitchResponse
 from core.config import settings
 from services.scheduler import get_scheduled_jobs
 
 router = APIRouter()
+
+
+def _sql_enabled() -> bool:
+    return (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() != "duckdb"
 
 
 @router.get("/kill-switch", response_model=KillSwitchResponse)
@@ -54,30 +53,38 @@ async def get_logs(
     limit: int = Query(100, ge=1, le=500),
     level: str = Query(None),
     component: str = Query(None),
-    db: Session = Depends(get_db)
 ):
     """Get system logs with filters."""
-    query = db.query(SystemLog)
-    
-    # Apply filters
-    if level:
-        query = query.filter(SystemLog.level == level)
-    if component:
-        query = query.filter(SystemLog.component == component)
-    
-    # Order by most recent
-    logs = query.order_by(desc(SystemLog.timestamp)).limit(limit).all()
-    
-    return [
-        LogResponse(
-            id=log.id,
-            timestamp=log.timestamp,
-            level=log.level.value,
-            component=log.component,
-            message=log.message
-        )
-        for log in logs
-    ]
+    if not _sql_enabled():
+        raise HTTPException(status_code=501, detail="System logs are disabled when STATE_STORE=duckdb")
+
+    from sqlalchemy import desc
+    from db.database import SessionLocal
+    from db.models import SystemLog
+
+    db = SessionLocal()
+    try:
+        query = db.query(SystemLog)
+
+        if level:
+            query = query.filter(SystemLog.level == level)
+        if component:
+            query = query.filter(SystemLog.component == component)
+
+        logs = query.order_by(desc(SystemLog.timestamp)).limit(int(limit)).all()
+
+        return [
+            LogResponse(
+                id=log.id,
+                timestamp=log.timestamp,
+                level=log.level.value,
+                component=log.component,
+                message=log.message,
+            )
+            for log in logs
+        ]
+    finally:
+        db.close()
 
 
 @router.get("/scheduler")

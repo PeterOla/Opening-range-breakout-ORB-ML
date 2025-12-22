@@ -7,15 +7,12 @@ Generates trading signals from scanned candidates:
 3. Computes position size based on risk
 4. Creates Signal records ready for execution
 """
-from datetime import datetime, time
+from datetime import datetime, date
 from typing import Optional
 from zoneinfo import ZoneInfo
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, func
 
-from db.database import SessionLocal
-from db.models import Signal, OpeningRange, OrderSide, OrderStatus
 from core.config import settings, get_strategy_config
+from state.duckdb_store import DuckDBStateStore
 
 
 ET = ZoneInfo("America/New_York")
@@ -27,19 +24,21 @@ def calculate_position_size(
     account_equity: float,
     risk_per_trade_pct: float = 0.01,
     max_position_value: Optional[float] = None,
+    leverage: float = 5.0,
 ) -> int:
     """
-    Calculate position size based on RISK (matching backtest logic).
+    Calculate position size based on EQUAL DOLLAR ALLOCATION (matching fast_backtest.py).
     
-    Position sized so that if stopped out, you lose exactly risk_per_trade_pct of equity.
-    Stop loss is at 10% ATR distance from entry (per strategy document).
+    Position Size = (Allocation * Leverage) / Entry Price
+    Where Allocation = Equity / Top_N (passed as max_position_value)
     
     Args:
         entry_price: Expected entry price
-        stop_price: Stop loss price (10% ATR from entry)
+        stop_price: Stop loss price (used for risk check only, not sizing)
         account_equity: Total account equity
-        risk_per_trade_pct: Risk per trade as decimal (0.01 = 1%)
-        max_position_value: Maximum position value (optional)
+        risk_per_trade_pct: Ignored for sizing (legacy)
+        max_position_value: The base allocation per trade (Equity / Top_N)
+        leverage: Leverage multiplier (default 5.0)
         
     Returns:
         Number of shares to trade
@@ -47,22 +46,18 @@ def calculate_position_size(
     if entry_price <= 0:
         return 0
     
-    # Risk per share = distance to stop
-    risk_per_share = abs(entry_price - stop_price)
+    # Use max_position_value as the base allocation if provided, else use equity
+    base_allocation = max_position_value if max_position_value else account_equity
     
-    if risk_per_share <= 0:
-        return 0
+    # Apply leverage
+    target_position_value = base_allocation * leverage
     
-    # Dollar risk = percentage of equity
-    dollar_risk = account_equity * risk_per_trade_pct
+    # Apply hard cap if set
+    if settings.MAX_POSITION_DOLLAR_LIMIT > 0:
+        target_position_value = min(target_position_value, settings.MAX_POSITION_DOLLAR_LIMIT)
     
-    # Shares sized so max loss = dollar_risk
-    shares = int(dollar_risk / risk_per_share)
-    
-    # Apply max position value constraint if provided
-    if max_position_value:
-        max_shares_by_value = int(max_position_value / entry_price)
-        shares = min(shares, max_shares_by_value)
+    # Calculate shares
+    shares = int(target_position_value / entry_price)
     
     return max(shares, 0)
 
@@ -106,18 +101,14 @@ def generate_signals_from_candidates(
     # Each position gets equal share of buying power
     max_position_value = buying_power / max_positions
     
-    db = SessionLocal() if save_to_db else None
     signals = []
     
     try:
+        store = DuckDBStateStore() if save_to_db and (settings.STATE_STORE or "duckdb").lower() == "duckdb" else None
+
         # Check for existing signals today to prevent duplicates
-        existing_symbols = set()
-        if db:
-            today = datetime.now(ET).date()
-            existing = db.query(Signal).filter(
-                func.date(Signal.signal_date) == today
-            ).all()
-            existing_symbols = {s.ticker for s in existing}
+        today = datetime.now(ET).date()
+        existing_symbols = store.list_existing_signal_symbols(today) if store else set()
         
         # Take only top N candidates
         top_candidates = candidates[:max_positions]
@@ -133,8 +124,8 @@ def generate_signals_from_candidates(
             entry_price = candidate["entry_price"]
             stop_price = candidate["stop_price"]
             
-            # Determine side
-            side = OrderSide.LONG if direction == 1 else OrderSide.SHORT
+            # Determine side (keep legacy values used by executor)
+            side = "LONG" if direction == 1 else "SHORT"
             
             # Calculate position size with buying power constraint
             shares = calculate_position_size(
@@ -143,6 +134,7 @@ def generate_signals_from_candidates(
                 account_equity=account_equity,
                 risk_per_trade_pct=risk_per_trade_pct,
                 max_position_value=max_position_value,
+                leverage=settings.FIXED_LEVERAGE,
             )
             
             if shares <= 0:
@@ -150,7 +142,7 @@ def generate_signals_from_candidates(
             
             signal_data = {
                 "symbol": symbol,
-                "side": side.value,
+                "side": side,
                 "direction": direction,
                 "entry_price": entry_price,
                 "stop_price": stop_price,
@@ -165,45 +157,27 @@ def generate_signals_from_candidates(
             }
             
             signals.append(signal_data)
-            
-            # Save to database
-            if save_to_db and db:
-                db_signal = Signal(
-                    signal_date=datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0),
-                    timestamp=datetime.now(ET),
-                    ticker=symbol,
-                    side=side,
-                    confidence=candidate.get("rvol", 1.0),  # Use RVOL as confidence proxy
-                    entry_price=entry_price,
-                    stop_price=stop_price,
-                    status=OrderStatus.PENDING,
-                )
-                db.add(db_signal)
-        
-        if save_to_db and db:
-            db.commit()
-            
-            # Update opening_ranges to mark signals generated
-            for signal in signals:
-                db.query(OpeningRange).filter(
-                    and_(
-                        OpeningRange.symbol == signal["symbol"],
-                        OpeningRange.date == datetime.now(ET).date(),
-                    )
-                ).update({"signal_generated": True})
-            
-            db.commit()
+
+        if store and signals:
+            store.insert_signals(
+                target_date=today,
+                signals=[
+                    {
+                        "symbol": s["symbol"],
+                        "side": s["side"],
+                        "confidence": float(s.get("rvol") or 1.0),
+                        "entry_price": float(s["entry_price"]),
+                        "stop_price": float(s["stop_price"]),
+                    }
+                    for s in signals
+                ],
+            )
+            store.mark_signals_generated(today, [s["symbol"] for s in signals])
         
         return signals
     
     except Exception as e:
-        if db:
-            db.rollback()
         raise e
-    
-    finally:
-        if db:
-            db.close()
 
 
 async def run_signal_generation(
@@ -288,79 +262,33 @@ async def run_signal_generation(
         }
 
 
-def get_pending_signals(db: Optional[Session] = None) -> list[dict]:
+def get_pending_signals(db: Optional[object] = None) -> list[dict]:
     """
     Get all pending signals that haven't been executed yet.
     """
-    close_session = False
-    if db is None:
-        db = SessionLocal()
-        close_session = True
-    
-    try:
-        pending = db.query(Signal).filter(
-            Signal.status == OrderStatus.PENDING
-        ).order_by(Signal.timestamp.desc()).all()
-        
-        return [
-            {
-                "id": s.id,
-                "symbol": s.ticker,
-                "side": s.side.value,
-                "entry_price": s.entry_price,
-                "stop_price": s.stop_price,
-                "confidence": s.confidence,
-                "timestamp": s.timestamp.isoformat() if s.timestamp else None,
-            }
-            for s in pending
-        ]
-    
-    finally:
-        if close_session:
-            db.close()
+    store = DuckDBStateStore()
+    return store.get_pending_signals()
 
 
 def update_signal_status(
     signal_id: int,
-    status: OrderStatus,
+    status: str,
     order_id: Optional[str] = None,
     filled_price: Optional[float] = None,
     rejection_reason: Optional[str] = None,
-    db: Optional[Session] = None,
+    db: Optional[object] = None,
 ) -> bool:
     """
     Update signal status after order placement.
     """
-    close_session = False
-    if db is None:
-        db = SessionLocal()
-        close_session = True
-    
+    store = DuckDBStateStore()
     try:
-        signal = db.query(Signal).filter(Signal.id == signal_id).first()
-        
-        if not signal:
-            return False
-        
-        signal.status = status
-        
-        if order_id:
-            signal.order_id = order_id
-        
-        if filled_price:
-            signal.filled_price = filled_price
-            signal.filled_time = datetime.now(ET)
-        
-        if rejection_reason:
-            signal.rejection_reason = rejection_reason
-        
-        db.commit()
-        return True
-    
-    except Exception as e:
-        db.rollback()
+        return store.update_signal_status(
+            signal_id=int(signal_id),
+            status=str(status.value if hasattr(status, "value") else status),
+            order_id=order_id,
+            filled_price=filled_price,
+            rejection_reason=rejection_reason,
+        )
+    except Exception:
         return False
-    
-    finally:
-        if close_session:
-            db.close()

@@ -1,9 +1,33 @@
 """
 Configuration management using pydantic-settings.
 """
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
 from typing import List
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _pick_data_root() -> Path:
+    """Pick a data root that actually contains daily parquet bars.
+
+    This avoids brittle behaviour where relative paths change depending on
+    where you start uvicorn/scripts from.
+    """
+
+    backend_data = _BACKEND_ROOT / "data"
+    repo_data = _REPO_ROOT / "data"
+
+    if (backend_data / "processed" / "daily").exists():
+        return backend_data
+    if (repo_data / "processed" / "daily").exists():
+        return repo_data
+    return backend_data
+
+
+_DATA_ROOT = _pick_data_root()
 
 
 class Settings(BaseSettings):
@@ -12,7 +36,7 @@ class Settings(BaseSettings):
     # Alpaca Configuration
     ALPACA_API_KEY: str = ""
     ALPACA_API_SECRET: str = ""
-    ALPACA_PAPER: bool = True
+    ALPACA_PAPER: bool = False
     
     # Polygon Configuration
     POLYGON_API_KEY: str = ""
@@ -30,9 +54,17 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg2://orb:orb@localhost:5432/orb"  # Local Postgres default
 
     # DuckDB and Parquet paths (local-only setup)
-    DUCKDB_PATH: str = "./data/duckdb_local.db"
-    PARQUET_BASE_PATH: str = "./data/processed"
-    DELTA_BASE_PATH: str = "./data/deltas"
+    DUCKDB_PATH: str = str(_BACKEND_ROOT / "data" / "duckdb_local.db")
+    # DuckDB file used for *trading state* (signals/opening ranges). Keep separate from market-data DuckDB.
+    DUCKDB_STATE_PATH: str = str(_BACKEND_ROOT / "data" / "trading_state.duckdb")
+    PARQUET_BASE_PATH: str = str(_DATA_ROOT / "processed")
+    DELTA_BASE_PATH: str = str(_DATA_ROOT / "deltas")
+
+    # State store backend
+    # Options: duckdb, sqlalchemy
+    # duckdb = local file (no Postgres/SQLite required)
+    # sqlalchemy = legacy DB-backed state (DATABASE_URL)
+    STATE_STORE: str = "duckdb"
     
     # API Configuration
     API_HOST: str = "0.0.0.0"
@@ -46,32 +78,43 @@ class Settings(BaseSettings):
     
     # Strategy Selection (controls top_n, direction, risk_per_trade)
     # Options: top5_long, top10_long, top20_both, top50_both
-    ORB_STRATEGY: str = "top20_both"
+    ORB_STRATEGY: str = "top5_both"
 
     # Universe selection for live scanning/execution
     # Options: all, micro, small, large, micro_small, micro_small_unknown, micro_unknown, unknown
-    ORB_UNIVERSE: str = "all"
+    ORB_UNIVERSE: str = "micro_small"
 
     # Execution broker
     # Options: alpaca, tradezero
-    EXECUTION_BROKER: str = "alpaca"
+    EXECUTION_BROKER: str = "tradezero"
 
     # TradeZero (Selenium) credentials + execution safety
     TRADEZERO_USERNAME: str = ""
     TRADEZERO_PASSWORD: str = ""
+    # Allow overriding the TradeZero web portal (different regions/identity providers)
+    TRADEZERO_HOME_URL: str = "https://standard.tradezeroweb.us/"
     TRADEZERO_HEADLESS: bool = False
-    TRADEZERO_DRY_RUN: bool = True
+    TRADEZERO_DRY_RUN: bool = False
     TRADEZERO_LOCATE_MAX_PPS: float = 0.05  # max $/share for short locates
     TRADEZERO_DEFAULT_EQUITY: float = 100000.0  # used if we cannot read equity from UI
+    TRADEZERO_LEVERAGE: float = 6.0  # Intraday leverage provided by TradeZero
     
     # Risk Management
     DAILY_LOSS_LIMIT_PCT: float = 0.10    # 10% daily loss limit (kill switch)
     
+    # Trading Parameters (Global)
+    TRADING_CAPITAL: float = 1000.0       # Base capital for sizing/sims
+    FIXED_LEVERAGE: float = 5.0           # Fixed leverage multiplier (e.g. 5x for CFD)
+    RISK_PER_TRADE_PCT: float = 0.01      # Default risk per trade (overridden by strategy)
+    MAX_POSITION_DOLLAR_LIMIT: float = 25000.0 # Hard cap on position value (safety)
+
     # System
     KILL_SWITCH_FILE: str = ".stop_trading"
+
+    _DEFAULT_ENV_FILE = _BACKEND_ROOT / ".env"
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_DEFAULT_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=True
     )

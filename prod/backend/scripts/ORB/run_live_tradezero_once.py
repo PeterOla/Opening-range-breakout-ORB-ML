@@ -6,12 +6,12 @@ Typical .env for your chosen configuration:
   EXECUTION_BROKER=tradezero
   ORB_UNIVERSE=micro_small
   ORB_STRATEGY=top5_both
-  TRADEZERO_DRY_RUN=true
+    TRADEZERO_DRY_RUN=false
 
 Usage (from prod/backend):
   python scripts/ORB/run_live_tradezero_once.py
 
-Set TRADEZERO_DRY_RUN=false only when you're satisfied with behaviour.
+WARNING: This script can place real orders when TRADEZERO_DRY_RUN=false.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from core.config import get_strategy_config
+from core.config import get_strategy_config, settings
 from execution.order_executor import get_executor
 from services.orb_scanner import scan_orb_candidates
 from services.signal_engine import (
@@ -78,6 +78,7 @@ async def main_async(scan: bool, generate: bool, execute: bool) -> int:
                 account_equity=equity,
                 risk_per_trade_pct=float(strategy["risk_per_trade"]),
                 max_position_value=max_position_value,
+                leverage=settings.FIXED_LEVERAGE,
             )
             if shares <= 0:
                 failed += 1
@@ -91,7 +92,7 @@ async def main_async(scan: bool, generate: bool, execute: bool) -> int:
                 stop_price=float(signal["stop_price"]),
                 signal_id=signal.get("id"),
             )
-            if res.get("status") in {"submitted", "dry_run"}:
+            if res.get("status") == "submitted":
                 submitted += 1
             else:
                 failed += 1

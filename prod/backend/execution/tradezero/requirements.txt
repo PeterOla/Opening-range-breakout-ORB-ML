@@ -1,5 +1,6 @@
 selenium
 webdriver-manager
 pandas
+lxml
 termcolor
 pytz

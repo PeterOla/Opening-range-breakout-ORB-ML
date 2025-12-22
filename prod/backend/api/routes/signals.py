@@ -1,16 +1,13 @@
 """
 Signals API endpoints.
 """
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from fastapi import APIRouter, Query
 from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel
 
-from db.database import get_db
-from db.models import Signal, OrderStatus
 from shared.schemas import SignalResponse
+from state.duckdb_store import DuckDBStateStore
 
 router = APIRouter()
 
@@ -31,55 +28,57 @@ class ExecuteSignalsRequest(BaseModel):
 async def get_signals(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db)
 ):
     """Get recent signals."""
-    signals = db.query(Signal).order_by(
-        desc(Signal.timestamp)
-    ).offset(offset).limit(limit).all()
-    
-    return [
-        SignalResponse(
-            id=s.id,
-            timestamp=s.timestamp,
-            ticker=s.ticker,
-            side=s.side.value,
-            confidence=s.confidence,
-            entry_price=s.entry_price,
-            status=s.status.value,
-            filled_price=s.filled_price,
-            filled_time=s.filled_time,
-            rejection_reason=s.rejection_reason
+    store = DuckDBStateStore()
+    rows = store.list_signals(limit=int(limit), offset=int(offset))
+    out: list[SignalResponse] = []
+    for r in rows:
+        ts = r.get("timestamp")
+        if ts is None:
+            ts = datetime.utcnow()
+        out.append(
+            SignalResponse(
+                id=int(r["id"]),
+                timestamp=ts,
+                ticker=r.get("symbol") or "",
+                side=r.get("side") or "",
+                confidence=r.get("confidence"),
+                entry_price=float(r.get("entry_price") or 0),
+                status=r.get("status") or "",
+                filled_price=r.get("filled_price"),
+                filled_time=r.get("filled_time"),
+                rejection_reason=r.get("rejection_reason"),
+            )
         )
-        for s in signals
-    ]
+    return out
 
 
 @router.get("/signals/active", response_model=List[SignalResponse])
-async def get_active_signals(db: Session = Depends(get_db)):
+async def get_active_signals():
     """Get active/pending signals from today."""
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    signals = db.query(Signal).filter(
-        Signal.timestamp >= today_start,
-        Signal.status.in_([OrderStatus.PENDING, OrderStatus.PARTIAL])
-    ).order_by(desc(Signal.timestamp)).all()
-    
-    return [
-        SignalResponse(
-            id=s.id,
-            timestamp=s.timestamp,
-            ticker=s.ticker,
-            side=s.side.value,
-            confidence=s.confidence,
-            entry_price=s.entry_price,
-            status=s.status.value,
-            filled_price=s.filled_price,
-            filled_time=s.filled_time,
-            rejection_reason=s.rejection_reason
+    store = DuckDBStateStore()
+    rows = store.list_active_signals(limit=200)
+    out: list[SignalResponse] = []
+    for r in rows:
+        ts = r.get("timestamp")
+        if ts is None:
+            ts = datetime.utcnow()
+        out.append(
+            SignalResponse(
+                id=int(r["id"]),
+                timestamp=ts,
+                ticker=r.get("symbol") or "",
+                side=r.get("side") or "",
+                confidence=r.get("confidence"),
+                entry_price=float(r.get("entry_price") or 0),
+                status=r.get("status") or "",
+                filled_price=r.get("filled_price"),
+                filled_time=r.get("filled_time"),
+                rejection_reason=r.get("rejection_reason"),
+            )
         )
-        for s in signals
-    ]
+    return out
 
 
 @router.post("/signals/generate")
@@ -145,34 +144,25 @@ async def execute_signals(request: ExecuteSignalsRequest):
     # Execute signals
     results = []
     for signal in pending:
-        # We need shares - fetch from the original signal
-        from db.database import SessionLocal
-        db = SessionLocal()
-        try:
-            db_signal = db.query(Signal).filter(Signal.id == signal["id"]).first()
-            
-            # Calculate shares from risk
-            from services.signal_engine import calculate_position_size
-            account = executor.get_account()
-            
-            shares = calculate_position_size(
-                entry_price=signal["entry_price"],
-                stop_price=signal["stop_price"],
-                account_equity=account.get("equity", 100000),
+        from services.signal_engine import calculate_position_size
+        account = executor.get_account()
+
+        shares = calculate_position_size(
+            entry_price=float(signal["entry_price"]),
+            stop_price=float(signal["stop_price"]),
+            account_equity=float(account.get("equity", 100000)),
+        )
+
+        if shares > 0:
+            result = executor.place_entry_order(
+                symbol=str(signal["symbol"]).upper(),
+                side=str(signal["side"]).upper(),
+                shares=int(shares),
+                entry_price=float(signal["entry_price"]),
+                stop_price=float(signal["stop_price"]),
+                signal_id=int(signal["id"]),
             )
-            
-            if shares > 0:
-                result = executor.place_entry_order(
-                    symbol=signal["symbol"],
-                    side=signal["side"],
-                    shares=shares,
-                    entry_price=signal["entry_price"],
-                    stop_price=signal["stop_price"],
-                    signal_id=signal["id"],
-                )
-                results.append(result)
-        finally:
-            db.close()
+            results.append(result)
     
     return {
         "status": "success",

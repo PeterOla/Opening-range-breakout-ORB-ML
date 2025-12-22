@@ -198,10 +198,10 @@ def _load_cached_bars(target_date: datetime) -> Optional[dict[str, pd.DataFrame]
             sym_df = df[df["symbol"] == symbol].drop(columns=["symbol"]).reset_index(drop=True)
             result[symbol] = sym_df
         
-        print(f"[Cache] ✅ Loaded {len(result)} symbols from cache for {target_date.strftime('%Y-%m-%d')}")
+        print(f"[Cache] Loaded {len(result)} symbols from cache for {target_date.strftime('%Y-%m-%d')}")
         return result
     except Exception as e:
-        print(f"[Cache] ⚠️ Failed to load cache: {e}")
+        print(f"[Cache] WARN: Failed to load cache: {e}")
         return None
 
 
@@ -232,17 +232,17 @@ def _save_bars_to_cache(bars: dict[str, pd.DataFrame], target_date: datetime) ->
                 dfs.append(df_copy)
         
         if not dfs:
-            print(f"[Cache] ⚠️ No bars for target date {target_date_only}")
+            print(f"[Cache] WARN: No bars for target date {target_date_only}")
             return
         
         combined = pd.concat(dfs, ignore_index=True)
         cache_path = _get_cache_path(target_date)
         combined.to_parquet(cache_path, index=False)
         
-        print(f"[Cache] 💾 Saved {len(dfs)} symbols to cache for {target_date.strftime('%Y-%m-%d')}")
+        print(f"[Cache] Saved {len(dfs)} symbols to cache for {target_date.strftime('%Y-%m-%d')}")
     except Exception as e:
         # Silently fail on cloud (no local storage)
-        print(f"[Cache] ⚠️ Could not save cache (expected on cloud): {e}")
+        print(f"[Cache] WARN: Could not save cache (expected on cloud): {e}")
 
 
 async def fetch_5min_bars(

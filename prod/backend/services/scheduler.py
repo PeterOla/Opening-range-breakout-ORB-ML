@@ -229,8 +229,6 @@ async def job_auto_execute_orb():
     from services.signal_engine import run_signal_generation, get_pending_signals, calculate_position_size
     from execution.order_executor import get_executor
     from core.config import get_strategy_config
-    from db.database import SessionLocal
-    from db.models import Signal
     
     logger.info("🚀 AUTO-EXECUTE ORB triggered at 9:36 AM ET")
     
@@ -297,9 +295,7 @@ async def job_auto_execute_orb():
         results = []
         executed_symbols = set()  # Track executed symbols to prevent duplicates
         
-        db = SessionLocal()
-        try:
-            for signal in pending:
+        for signal in pending:
                 # Skip if we already executed this symbol today
                 if signal["symbol"] in executed_symbols:
                     logger.info(f"⏭️ Skipping duplicate: {signal['symbol']}")
@@ -328,22 +324,14 @@ async def job_auto_execute_orb():
                         orders_placed += 1
                         executed_symbols.add(signal["symbol"])
                         logger.info(f"✅ Placed {signal['side']} order: {signal['symbol']} x{shares}")
-                        
-                        # Mark signal as executed in database
-                        from db.models import Signal
-                        db.query(Signal).filter(Signal.id == signal["id"]).update({
-                            "status": "SUBMITTED",
-                            "order_id": order_result.get("order_id"),
-                        })
-                        db.commit()
                     else:
                         orders_failed += 1
-                        logger.warning(f"❌ Failed order: {signal['symbol']} - {order_result.get('error')}")
+                        # Log 'reason' if available, otherwise fallback to 'error' or 'unknown'
+                        error_msg = order_result.get("reason") or order_result.get("error") or "unknown error"
+                        logger.warning(f"❌ Failed order: {signal['symbol']} - {error_msg}")
                 else:
                     orders_failed += 1
                     logger.warning(f"⚠️ Skipped {signal['symbol']} - calculated 0 shares")
-        finally:
-            db.close()
         
         logger.info(f"""
         ========== AUTO-EXECUTE COMPLETE ==========
@@ -360,10 +348,47 @@ async def job_auto_execute_orb():
             "orders_failed": orders_failed,
             "results": results,
         }
-        
+
     except Exception as e:
         logger.error(f"❌ Auto-execute failed: {e}", exc_info=True)
         raise
+
+
+async def job_tradezero_protective_stop_watcher():
+    """Periodic watcher to attach protective stops after delayed fills (TradeZero).
+
+    TradeZero entries are submitted as STOP orders and can fill later. This watcher
+    ensures we attach a protective stop once a position actually exists.
+    """
+    from datetime import time
+    from core.config import settings
+    from execution.order_executor import get_executor
+
+    # Only relevant for TradeZero live mode.
+    if (getattr(settings, "EXECUTION_BROKER", "") or "").lower() != "tradezero":
+        return {"status": "skipped", "reason": "not_tradezero"}
+    if bool(getattr(settings, "TRADEZERO_DRY_RUN", False)):
+        return {"status": "skipped", "reason": "dry_run"}
+
+    now = datetime.now(ET)
+    calendar = get_market_calendar()
+    if not calendar.is_trading_day(now.date()):
+        return {"status": "skipped", "reason": "market_closed"}
+
+    # Only run during regular market hours.
+    if not (time(9, 35) <= now.time() < time(16, 0)):
+        return {"status": "skipped", "reason": "out_of_hours"}
+
+    executor = get_executor()
+    # Only TradeZero executor implements this.
+    if not hasattr(executor, "ensure_protective_stops"):
+        return {"status": "skipped", "reason": "unsupported_executor"}
+
+    try:
+        return executor.ensure_protective_stops()
+    except Exception as e:
+        logger.error("❌ Protective stop watcher failed: %s", e)
+        return {"status": "error", "error": str(e)}
 
 
 async def job_daily_summary():
@@ -569,6 +594,21 @@ def start_scheduler():
         replace_existing=True,
     )
     logger.info("📅 Scheduled: Auto ORB execution at 9:36 AM ET (Mon-Fri)")
+
+    # Job 2c: Protective stop watcher (TradeZero) - runs every minute during market hours.
+    scheduler.add_job(
+        job_tradezero_protective_stop_watcher,
+        CronTrigger(
+            minute="*/1",
+            hour="9-15",
+            day_of_week="mon-fri",
+            timezone=ET,
+        ),
+        id="tradezero_stop_watcher",
+        name="TradeZero Protective Stop Watcher (1m)",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: TradeZero protective stop watcher (every 1 min, market hours)")
     
     # Job 3: Daily summary - dynamic based on market close
     # Will run 5 mins after actual market close

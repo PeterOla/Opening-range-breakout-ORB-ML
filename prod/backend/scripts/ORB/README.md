@@ -4,6 +4,19 @@ Opening Range Breakout strategy universe builders and backtester.
 
 ## Quick Start
 
+### Live (TradeZero) One-Shot Run
+
+Runs `scan → signals → execute` using the configured broker.
+
+```bash
+cd prod/backend
+python scripts/ORB/run_live_tradezero_once.py --no-execute
+```
+
+Notes:
+- Trading state (opening ranges + signals) is stored in DuckDB (default: `prod/backend/data/trading_state.duckdb`).
+- Override the state path with `DUCKDB_STATE_PATH=...` and ensure `STATE_STORE=duckdb` in your `.env`.
+
 ### 1. Build Full Historical Universe
 ```bash
 cd prod/backend
