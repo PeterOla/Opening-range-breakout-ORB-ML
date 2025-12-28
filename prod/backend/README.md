@@ -2,6 +2,10 @@
 
 Production trading system backend with Alpaca integration.
 
+## Documentation
+*   **[Strategy Documentation](STRATEGY_DOCUMENTATION.md):** Detailed explanation of Position Sizing, Risk Management, and Execution Rules.
+*   **[Data Sync](DATA_SYNC.md):** Instructions for updating market data.
+
 ## Setup
 
 1. **Install dependencies:**

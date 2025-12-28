@@ -17,6 +17,19 @@ Notes:
 - Trading state (opening ranges + signals) is stored in DuckDB (default: `prod/backend/data/trading_state.duckdb`).
 - Override the state path with `DUCKDB_STATE_PATH=...` and ensure `STATE_STORE=duckdb` in your `.env`.
 
+### Live (TradeZero) One-By-One Debug
+
+Execute a single symbol for today's signal (useful for debugging sizing / broker errors):
+
+```bash
+cd prod/backend
+python scripts/ORB/execute_one_signal.py --symbol OMER --dry-run
+```
+
+Notes:
+- The script refuses to submit if today's signal already has an `order_id` (use `--force` to override).
+- Start with `--dry-run` to avoid placing real orders.
+
 ### 1. Build Full Historical Universe
 ```bash
 cd prod/backend

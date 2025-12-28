@@ -10,9 +10,12 @@ Generates trading signals from scanned candidates:
 from datetime import datetime, date
 from typing import Optional
 from zoneinfo import ZoneInfo
+import logging
 
 from core.config import settings, get_strategy_config
 from state.duckdb_store import DuckDBStateStore
+
+logger = logging.getLogger(__name__)
 
 
 ET = ZoneInfo("America/New_York")
@@ -58,6 +61,11 @@ def calculate_position_size(
     
     # Calculate shares
     shares = int(target_position_value / entry_price)
+    
+    logger.info(
+        f"Sizing: Price={entry_price}, BaseAlloc={base_allocation}, Lev={leverage}, "
+        f"TargetVal={target_position_value}, Shares={shares}"
+    )
     
     return max(shares, 0)
 
@@ -128,13 +136,15 @@ def generate_signals_from_candidates(
             side = "LONG" if direction == 1 else "SHORT"
             
             # Calculate position size with buying power constraint
+            # Note: max_position_value is derived from buying_power (which is already leveraged equity)
+            # So we pass leverage=1.0 to avoid double-leveraging
             shares = calculate_position_size(
                 entry_price=entry_price,
                 stop_price=stop_price,
                 account_equity=account_equity,
                 risk_per_trade_pct=risk_per_trade_pct,
                 max_position_value=max_position_value,
-                leverage=settings.FIXED_LEVERAGE,
+                leverage=1.0,
             )
             
             if shares <= 0:

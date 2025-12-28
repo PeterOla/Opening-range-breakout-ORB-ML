@@ -78,7 +78,7 @@ async def main_async(scan: bool, generate: bool, execute: bool) -> int:
                 account_equity=equity,
                 risk_per_trade_pct=float(strategy["risk_per_trade"]),
                 max_position_value=max_position_value,
-                leverage=settings.FIXED_LEVERAGE,
+                leverage=1.0,
             )
             if shares <= 0:
                 failed += 1

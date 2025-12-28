@@ -1,48 +1,48 @@
 from __future__ import annotations
-import os
-import json
 import time
-import warnings
 import pandas as pd
 from collections import namedtuple
-from enum import Enum
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, Literal, Union
+from typing import Optional
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import Select, WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import (
     NoSuchElementException,
-    WebDriverException,
     StaleElementReferenceException,
     ElementClickInterceptedException,
-    ElementNotInteractableException,
-    TimeoutException,
 )
 from webdriver_manager.chrome import ChromeDriverManager
-from termcolor import colored
+
+from .enums import Order, TIF
 
 # Constants
 DEFAULT_TZ_HOME_URL = 'https://standard.tradezeroweb.us/'
 
-class Order(Enum):
-    BUY = 'buy'
-    SELL = 'sell'
-    SHORT = 'short'
-    COVER = 'cover'
-
-class TIF(Enum):
-    DAY = 'DAY'
-    GTC = 'GTC'
-    GTX = 'GTX'
-
 class TradeZero:
+    """
+    A Python wrapper for the TradeZero Web Platform using Selenium.
+    
+    Allows for automated trading, including:
+    - Logging in
+    - Getting market data
+    - Locating shares for shorting
+    - Placing Limit, Market, and Stop orders
+    - Managing portfolio and active orders
+    """
+    
     def __init__(self, user_name: str, password: str, headless: bool = False, home_url: Optional[str] = None):
+        """
+        Initialize the TradeZero client.
+        
+        Args:
+            user_name (str): TradeZero username.
+            password (str): TradeZero password.
+            headless (bool): Whether to run Chrome in headless mode.
+            home_url (str, optional): The URL of the TradeZero web platform. Defaults to standard US URL.
+        """
         self.user_name = user_name
         self.password = password
         self.home_url = (home_url or DEFAULT_TZ_HOME_URL).strip()
@@ -56,30 +56,9 @@ class TradeZero:
         
         self.driver = webdriver.Chrome(service=service, options=options)
         self.driver.get(self.home_url)
-
-        # Debug: when enabled, write DOM/CSS snapshots to repo-root logs/.
-        self._debug_dump_dom = (os.getenv("TZ_DEBUG_DUMP", "0").strip().lower() in {"1", "true", "yes"})
         
         # Initial login
         self.login()
-
-    def _repo_root(self) -> Path:
-        here = Path(__file__).resolve()
-        # .../prod/backend/execution/tradezero/client.py
-        return here.parents[5]
-
-    def _logs_dir(self) -> Path:
-        return self._repo_root() / "logs"
-
-    def _wait_document_ready(self, timeout_s: float = 30.0) -> bool:
-        """Wait for document.readyState == 'complete' (best-effort)."""
-        try:
-            WebDriverWait(self.driver, timeout_s).until(
-                lambda d: (d.execute_script("return document.readyState") or "").lower() == "complete"
-            )
-            return True
-        except Exception:
-            return False
 
     def _dom_fully_loaded(self, iter_amount: int = 1):
         """Check that webpage elements are fully loaded/visible."""
@@ -94,143 +73,6 @@ class TradeZero:
                 pass
             time.sleep(0.5)
         return False
-
-    def _wait_for_any(self, candidates: list[tuple[str, str]], timeout_s: float = 20.0):
-        """Return the first element found from a list of (by, value) locators."""
-        last_exc: Optional[Exception] = None
-        end = time.time() + timeout_s
-        while time.time() < end:
-            for by, value in candidates:
-                try:
-                    el = self.driver.find_element(by, value)
-                    if el:
-                        return el
-                except Exception as e:
-                    last_exc = e
-                    continue
-            time.sleep(0.2)
-        if last_exc:
-            raise last_exc
-        raise TimeoutException("Timed out waiting for any candidate element")
-
-    def _wait_for_trading_panel_ready(self, timeout_s: float = 45.0) -> bool:
-        """Wait until the trading ticket UI is usable after login/navigation."""
-        try:
-            self._wait_document_ready(timeout_s=min(timeout_s, 20.0))
-            WebDriverWait(self.driver, timeout_s).until(
-                EC.presence_of_element_located((By.ID, "trading-order-select-type"))
-            )
-            WebDriverWait(self.driver, timeout_s).until(
-                EC.presence_of_element_located((By.ID, "trading-order-input-symbol"))
-            )
-            return True
-        except Exception:
-            return False
-
-    def _dump_ui_snapshot(self, reason: str) -> None:
-        """Write HTML + best-effort CSS + diagnostics for selector debugging.
-
-        Files are written under repo-root logs/ as tradezero_ui_<timestamp>_<reason>/*
-        """
-        if not self._debug_dump_dom:
-            return
-
-        try:
-            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            safe_reason = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in (reason or "snapshot"))
-            out_dir = self._logs_dir() / f"tradezero_ui_{ts}_{safe_reason}"
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            meta = {
-                "timestamp_utc": ts,
-                "reason": reason,
-                "url": getattr(self.driver, "current_url", ""),
-                "ready_state": None,
-            }
-            try:
-                meta["ready_state"] = self.driver.execute_script("return document.readyState")
-            except Exception:
-                pass
-
-            # HTML
-            try:
-                (out_dir / "page.html").write_text(self.driver.page_source or "", encoding="utf-8", errors="ignore")
-            except Exception:
-                pass
-
-            # Screenshot
-            try:
-                self.driver.save_screenshot(str(out_dir / "page.png"))
-            except Exception:
-                pass
-
-            # Useful diagnostics (IDs and dropdown options).
-            diag: dict[str, object] = {}
-            for eid in [
-                "trading-order-select-type",
-                "trading-order-input-symbol",
-                "portfolio-tab-ao-1",
-                "portfolio-tab-op-1",
-                "aoTable-1",
-                "opTable-1",
-            ]:
-                try:
-                    el = self.driver.find_element(By.ID, eid)
-                    diag[eid] = {
-                        "tag": el.tag_name,
-                        "displayed": bool(el.is_displayed()),
-                        "enabled": bool(el.is_enabled()),
-                    }
-                except Exception as e:
-                    diag[eid] = {"error": str(e)}
-
-            try:
-                sel = Select(self.driver.find_element(By.ID, "trading-order-select-type"))
-                diag["order_type_options"] = [((o.text or "").strip()) for o in sel.options]
-            except Exception as e:
-                diag["order_type_options"] = {"error": str(e)}
-
-            # Best-effort CSS extraction. This can fail due to cross-origin stylesheet restrictions.
-            css_text = ""
-            try:
-                css_text = self.driver.execute_script(
-                    """
-                    const out = [];
-                    // Inline <style> tags
-                    document.querySelectorAll('style').forEach(s => out.push(s.textContent || ''));
-                    // Same-origin stylesheets (cssRules access can throw)
-                    for (const ss of document.styleSheets) {
-                      try {
-                        const rules = ss.cssRules;
-                        if (!rules) continue;
-                        let txt = '';
-                        for (const r of rules) { txt += r.cssText + '\n'; }
-                        if (txt.trim()) out.push(txt);
-                      } catch (e) {
-                        // ignore
-                      }
-                    }
-                    return out.join('\n\n/* ---- */\n\n');
-                    """
-                ) or ""
-            except Exception:
-                css_text = ""
-
-            try:
-                (out_dir / "styles.css").write_text(css_text, encoding="utf-8", errors="ignore")
-            except Exception:
-                pass
-
-            try:
-                (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-                (out_dir / "diagnostics.json").write_text(json.dumps(diag, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-
-            print(f"TZ DEBUG: UI snapshot saved to {out_dir}")
-        except Exception:
-            # Never allow debug dumping to break trading.
-            return
 
     def _dismiss_modal_overlays(self) -> None:
         """Best-effort close of modal overlays that block clicks (simplemodal)."""
@@ -377,46 +219,13 @@ class TradeZero:
         for _ in range(max(1, retries + 1)):
             try:
                 self._dismiss_modal_overlays()
-                el = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((by, selector))
-                )
-
-                # Scroll into view; TradeZero often renders tabs off-screen.
-                try:
-                    self.driver.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
-                        el,
-                    )
-                    time.sleep(0.1)
-                except Exception:
-                    pass
-
-                # Prefer a real click when possible.
-                try:
-                    WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((by, selector))
-                    )
-                    el.click()
-                except (TimeoutException, ElementClickInterceptedException, ElementNotInteractableException):
-                    # Fallback: JS click bypasses hit-testing/overlay issues.
-                    self._dismiss_modal_overlays()
-                    self.driver.execute_script("arguments[0].click();", el)
+                self.driver.find_element(by, selector).click()
                 return
             except ElementClickInterceptedException as e:
                 last_err = e
                 self._dismiss_modal_overlays()
                 time.sleep(0.25)
                 # Try JS click as a fallback (bypasses hit-testing)
-                try:
-                    el = self.driver.find_element(by, selector)
-                    self.driver.execute_script("arguments[0].click();", el)
-                    return
-                except Exception:
-                    pass
-            except ElementNotInteractableException as e:
-                last_err = e
-                self._dismiss_modal_overlays()
-                time.sleep(0.25)
                 try:
                     el = self.driver.find_element(by, selector)
                     self.driver.execute_script("arguments[0].click();", el)
@@ -484,26 +293,23 @@ class TradeZero:
 
             password_form.clear()
             password_form.send_keys(self.password, Keys.RETURN)
-
-            # Prefer waiting for the trading panel to appear over a brittle 'Portfolio' header check.
-            if self._wait_for_trading_panel_ready(timeout_s=60) or self._dom_fully_loaded(60):
+            
+            if self._dom_fully_loaded(60):
                 print("Login successful.")
-                self._dump_ui_snapshot("after_login")
-                # Best-effort: set default order type to Limit.
+                # Set default order type to Limit (index 1)
                 try:
                     Select(self.driver.find_element(By.ID, "trading-order-select-type")).select_by_index(1)
-                except Exception:
+                except:
                     pass
             else:
+                # Try to surface a useful error message from the page.
                 err = self._try_get_login_error_text()
                 if err:
                     print(f"Login failed: {err}")
                 else:
-                    print("Login might have failed or timed out (trading panel not ready).")
-                self._dump_ui_snapshot("login_not_ready")
+                    print("Login might have failed or timed out.")
         except Exception as e:
             print(f"Login error: {e}")
-            self._dump_ui_snapshot("login_exception")
 
     def _try_get_login_error_text(self) -> str:
         """Best-effort extraction of a human-readable login error from the current page."""
@@ -557,30 +363,24 @@ class TradeZero:
                 pass
 
         try:
-            if not self._wait_for_trading_panel_ready(timeout_s=20):
-                print("Warning: Trading panel not ready; attempting symbol load anyway.")
-
             input_symbol = self.driver.find_element(By.ID, "trading-order-input-symbol")
             input_symbol.clear()
             input_symbol.send_keys(symbol, Keys.RETURN)
-
-            def _ask_is_valid(_driver) -> bool:
+            time.sleep(0.5)
+            
+            for i in range(50): # Wait up to 5 seconds
                 try:
-                    price_text = _driver.find_element(By.ID, "trading-order-ask").text.replace(",", "")
-                    return bool(price_text) and price_text.replace(".", "").isdigit() and float(price_text) > 0
-                except Exception:
-                    return False
-
-            try:
-                WebDriverWait(self.driver, 10).until(_ask_is_valid)
-                return True
-            except TimeoutException:
-                print(f"Warning: Could not load symbol {symbol} (ask did not populate)")
-                self._dump_ui_snapshot(f"load_symbol_timeout_{symbol}")
-                return False
+                    price_text = self.driver.find_element(By.ID, "trading-order-ask").text.replace(',', '')
+                    if price_text and price_text.replace('.', '').isdigit() and float(price_text) > 0:
+                        return True
+                except:
+                    pass
+                time.sleep(0.1)
+            
+            print(f"Warning: Could not load symbol {symbol}")
+            return False
         except Exception as e:
             print(f"Error loading symbol {symbol}: {e}")
-            self._dump_ui_snapshot(f"load_symbol_exception_{symbol}")
             return False
 
     @property
@@ -795,17 +595,7 @@ class TradeZero:
                     )
 
             # Select a Stop order type by option text (not by index).
-            # Some UI variants change element IDs, so try a small set of candidates.
-            order_type_el = self._wait_for_any(
-                [
-                    (By.ID, "trading-order-select-type"),
-                    (By.CSS_SELECTOR, "select#trading-order-select-type"),
-                    (By.CSS_SELECTOR, "select[id*='order-select-type']"),
-                    (By.CSS_SELECTOR, "select[id*='select-type']"),
-                ],
-                timeout_s=10,
-            )
-            sel = Select(order_type_el)
+            sel = Select(self.driver.find_element(By.ID, "trading-order-select-type"))
             stop_idx = None
             for i, opt in enumerate(sel.options):
                 txt = (opt.text or "").strip().lower()
@@ -820,11 +610,7 @@ class TradeZero:
                         stop_idx = i
                         break
             if stop_idx is None:
-                options = [((o.text or "").strip()) for o in sel.options]
-                raise RuntimeError(
-                    "Could not find a 'Stop' order type in order-type dropdown. "
-                    f"Available options: {options}"
-                )
+                raise RuntimeError("Could not find a 'Stop' order type in trading-order-select-type")
             sel.select_by_index(stop_idx)
 
             # Allow the UI to swap relevant inputs after changing order type.
@@ -897,7 +683,6 @@ class TradeZero:
             return True
         except Exception as e:
             print(f"Error placing stop order: {e}")
-            self._dump_ui_snapshot(f"stop_order_error_{symbol}")
             return False
 
     def market_order(self, direction: Order, symbol: str, quantity: int, tif: TIF = TIF.DAY):
@@ -1056,24 +841,3 @@ class TradeZero:
         except Exception as e:
             print(f"Error cancelling order: {e}")
             return False
-
-    def get_equity(self):
-        """Get Account Equity."""
-        try:
-            # This depends on where it is displayed. 
-            # Usually in the top bar or Account tab.
-            # shner-elmo hides it, so it must be visible by default.
-            # Let's try to find an element with ID 'account-equity' or similar, or scrape the text.
-            # Based on B-Harakat, it might be in a specific div.
-            # For now, let's try to find the element that contains "Equity"
-            
-            # Fallback: Account Tab
-            self.driver.find_element(By.ID, "portfolio-tab-acc-1").click()
-            time.sleep(0.5)
-            # Look for Equity row
-            # This is a guess without seeing the DOM. 
-            # But usually it's in a table.
-            pass
-        except:
-            pass
-        return 0.0

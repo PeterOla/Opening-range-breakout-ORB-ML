@@ -86,6 +86,7 @@ def manual_execute():
             stop_price=signal["stop_price"],
             account_equity=equity,
             max_position_value=max_position_value,
+            leverage=1.0,
         )
         
         logger.info(f"Calculated shares: {shares}")

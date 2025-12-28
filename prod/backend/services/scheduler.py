@@ -302,11 +302,14 @@ async def job_auto_execute_orb():
                     continue
                 
                 # Calculate shares based on risk with buying power constraint
+                # Note: max_position_value is derived from buying_power (already leveraged)
+                # So we pass leverage=1.0 to avoid double-leveraging
                 shares = calculate_position_size(
                     entry_price=signal["entry_price"],
                     stop_price=signal["stop_price"],
                     account_equity=equity,
                     max_position_value=max_position_value,
+                    leverage=1.0,
                 )
                 
                 if shares > 0:
