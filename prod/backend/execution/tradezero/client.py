@@ -8,6 +8,7 @@ from collections import namedtuple
 from enum import Enum
 from datetime import datetime
 from pathlib import Path
+import glob
 from typing import Optional, Literal, Union
 
 from selenium import webdriver
@@ -47,7 +48,29 @@ class TradeZero:
         self.password = password
         self.home_url = (home_url or DEFAULT_TZ_HOME_URL).strip()
         
-        service = ChromeService(ChromeDriverManager().install())
+        def _find_cached_chromedriver() -> str | None:
+            # 1) Explicit override
+            for env_key in ("TRADEZERO_CHROMEDRIVER_PATH", "CHROMEDRIVER_PATH"):
+                p = (os.getenv(env_key) or "").strip().strip('"')
+                if p and os.path.exists(p):
+                    return p
+
+            # 2) webdriver_manager cache (works offline)
+            userprofile = (os.getenv("USERPROFILE") or "").strip()
+            if userprofile:
+                base = Path(userprofile) / ".wdm" / "drivers" / "chromedriver"
+                if base.exists():
+                    hits = glob.glob(str(base / "**" / "chromedriver.exe"), recursive=True)
+                    if hits:
+                        hits.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                        return hits[0]
+            return None
+
+        cached = _find_cached_chromedriver()
+        if cached:
+            service = ChromeService(cached)
+        else:
+            service = ChromeService(ChromeDriverManager().install())
         options = webdriver.ChromeOptions()
         options.add_experimental_option('excludeSwitches', ['enable-logging'])
         if headless:
@@ -64,9 +87,28 @@ class TradeZero:
         self.login()
 
     def _repo_root(self) -> Path:
+        """Return repository root.
+
+        Avoid relying on a fixed parent depth because this repo often lives inside
+        deeper directory structures on Windows.
+        """
+
         here = Path(__file__).resolve()
-        # .../prod/backend/execution/tradezero/client.py
-        return here.parents[5]
+
+        # Heuristic: walk upwards until we find a marker file that exists at the
+        # repo root in this project.
+        markers = ["docker-compose.yml", "requirements.txt", "README.md"]
+        for parent in [here.parent, *here.parents]:
+            try:
+                if any((parent / m).exists() for m in markers) and (parent / "prod").exists():
+                    return parent
+            except Exception:
+                # In rare cases on Windows, probing some paths can throw.
+                continue
+
+        # Fallback: assume the historical layout .../prod/backend/execution/tradezero/client.py
+        # and go up to the workspace root.
+        return here.parents[4]
 
     def _logs_dir(self) -> Path:
         return self._repo_root() / "logs"
@@ -933,7 +975,13 @@ class TradeZero:
         try:
             # Ensure Portfolio tab is active
             self._safe_click(By.ID, "portfolio-tab-op-1", retries=1)
-            time.sleep(0.5)
+            try:
+                WebDriverWait(self.driver, 6).until(
+                    lambda d: d.find_elements(By.CSS_SELECTOR, "#opTable-1 tbody tr")
+                    or d.find_elements(By.XPATH, '//*[@id="opTable-1"]/tbody/tr/td')
+                )
+            except Exception:
+                time.sleep(0.5)
             
             # Check if empty
             try:
@@ -981,7 +1029,14 @@ class TradeZero:
         try:
             # Click Active Orders tab
             self._safe_click(By.ID, "portfolio-tab-ao-1", retries=1)
-            time.sleep(0.5)
+            # Give the table time to populate; headless mode can be slower.
+            try:
+                WebDriverWait(self.driver, 6).until(
+                    lambda d: d.find_elements(By.XPATH, '//*[@id="aoTable-1"]/tbody/tr[@order-id]')
+                    or d.find_elements(By.XPATH, '//*[@id="aoTable-1"]/tbody/tr/td')
+                )
+            except Exception:
+                time.sleep(0.5)
             
             # Check if empty
             orders = self.driver.find_elements(By.XPATH, '//*[@id="aoTable-1"]/tbody/tr[@order-id]')
@@ -989,6 +1044,18 @@ class TradeZero:
                 return pd.DataFrame()
 
             table = self.driver.find_element(By.ID, "aoTable-1")
+
+            # Header cells live in the sibling header table within the tab container.
+            headers: list[str] = []
+            try:
+                header_cells = self.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "#portfolio-content-tab-ao-1 table.table-1 thead tr th",
+                )
+                headers = [((h.text or "").strip() or f"col_{i}") for i, h in enumerate(header_cells)]
+            except Exception:
+                headers = []
+
             rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
 
             out: list[dict] = []
@@ -1001,6 +1068,19 @@ class TradeZero:
                 # Empty-state row (single message cell)
                 if len(tds) == 1:
                     continue
+
+                cell_texts = [((td.text or "").strip()) for td in tds]
+
+                # Map all cells to headers if possible (trim/pad as needed).
+                row_dict: dict[str, str] = {}
+                if headers and len(headers) == len(cell_texts):
+                    row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
+                elif headers and len(headers) < len(cell_texts):
+                    row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
+                    for j in range(len(headers), len(cell_texts)):
+                        row_dict[f"col_{j}"] = cell_texts[j]
+                else:
+                    row_dict = {f"col_{i}": cell_texts[i] for i in range(len(cell_texts))}
 
                 # Heuristic mapping: the first cell is usually cancel button.
                 # We primarily need a stable ref number for cancel_order().
@@ -1017,11 +1097,111 @@ class TradeZero:
                 except Exception:
                     qty = 0.0
 
-                out.append({"ref_number": order_id, "symbol": symbol, "qty": qty})
+                # Always include stable fields.
+                row_dict.update({"ref_number": order_id, "symbol": symbol, "qty": qty})
+                out.append(row_dict)
 
             return pd.DataFrame(out)
         except Exception as e:
             print(f"Error reading active orders: {e}")
+            return None
+
+    def get_inactive_orders(self):
+        """Get inactive orders (filled/cancelled/rejected) as DataFrame."""
+        try:
+            self._safe_click(By.ID, "portfolio-tab-io-1", retries=1)
+            try:
+                WebDriverWait(self.driver, 6).until(
+                    lambda d: d.find_elements(By.XPATH, '//*[@id="ioTable-1"]/tbody/tr')
+                    or d.find_elements(By.XPATH, '//*[@id="ioTable-1"]/tbody/tr/td')
+                )
+            except Exception:
+                time.sleep(0.5)
+
+            rows_any = self.driver.find_elements(By.XPATH, '//*[@id="ioTable-1"]/tbody/tr')
+            if not rows_any:
+                return pd.DataFrame()
+
+            table = self.driver.find_element(By.ID, "ioTable-1")
+
+            headers: list[str] = []
+            try:
+                header_cells = self.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "#portfolio-content-tab-io-1 table.table-1 thead tr th",
+                )
+                headers = [((h.text or "").strip() or f"col_{i}") for i, h in enumerate(header_cells)]
+            except Exception:
+                headers = []
+
+            rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+
+            out: list[dict] = []
+            for r in rows:
+                order_id = (r.get_attribute("order-id") or "").strip()
+                tds = r.find_elements(By.CSS_SELECTOR, "td")
+                if not tds:
+                    continue
+
+                # Empty-state row (single message cell)
+                if len(tds) == 1:
+                    msg = (tds[0].text or "").strip().lower()
+                    if msg:
+                        # Most likely an empty-state message.
+                        return pd.DataFrame()
+                    continue
+
+                cell_texts = [((td.text or "").strip()) for td in tds]
+
+                row_dict: dict[str, str] = {}
+                if headers and len(headers) == len(cell_texts):
+                    row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
+                elif headers and len(headers) < len(cell_texts):
+                    row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
+                    for j in range(len(headers), len(cell_texts)):
+                        row_dict[f"col_{j}"] = cell_texts[j]
+                else:
+                    row_dict = {f"col_{i}": cell_texts[i] for i in range(len(cell_texts))}
+
+                symbol = ""
+                if len(tds) >= 3:
+                    symbol = (tds[2].text or "").strip().upper()
+
+                qty_txt = ""
+                if len(tds) >= 5:
+                    qty_txt = tds[4].text or ""
+                qty_txt = qty_txt.replace(",", "").strip()
+                try:
+                    qty = float(qty_txt)
+                except Exception:
+                    qty = 0.0
+
+                row_dict.update({"ref_number": order_id, "symbol": symbol, "qty": qty})
+                out.append(row_dict)
+
+            return pd.DataFrame(out)
+        except Exception as e:
+            print(f"Error reading inactive orders: {e}")
+            return None
+
+    def get_notifications(self, max_items: int = 50):
+        """Get the most recent notifications as a DataFrame.
+
+        TradeZero often reports rejects/locate issues in the Notifications panel rather
+        than in the orders tables.
+        """
+        try:
+            # Notifications are usually always visible in the left column.
+            items = self.driver.find_elements(By.CSS_SELECTOR, "#notifications-list-1 li")
+            out: list[dict] = []
+            for el in items[-max_items:]:
+                txt = (el.text or "").strip()
+                if not txt:
+                    continue
+                out.append({"text": txt})
+            return pd.DataFrame(out)
+        except Exception as e:
+            print(f"Error reading notifications: {e}")
             return None
 
     def cancel_order(self, order_id: str):

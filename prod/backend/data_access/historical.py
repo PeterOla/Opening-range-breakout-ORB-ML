@@ -54,13 +54,61 @@ def query_symbol_range(symbol: str, start_ts: datetime, end_ts: datetime, interv
         parts.append(os.path.join(PARQUET_BASE, interval, f"symbol={symbol}", f"year={dt.year:04d}", f"month={dt.month:02d}", f"day={dt.day:02d}", "*.parquet"))
         dt = dt + pd.to_timedelta(1, unit="D")
 
-    # Guard: if no parts exist, return empty DataFrame
+    # Guard: if no partitioned parts exist, we may still have flat per-symbol parquet files
+    # (e.g. DataPipeline writes: data/processed/5min/<SYMBOL>.parquet).
     files = []
     for p in parts:
         files.extend([os.path.abspath(fp) for fp in glob.glob(p)])
 
     if not files:
-        return pd.DataFrame()
+        # Flat-file fallback
+        flat_path = os.path.join(PARQUET_BASE, interval, f"{symbol}.parquet")
+        if not os.path.exists(flat_path):
+            # Some pipelines may uppercase symbols on disk
+            flat_path = os.path.join(PARQUET_BASE, interval, f"{symbol.upper()}.parquet")
+        if not os.path.exists(flat_path):
+            return pd.DataFrame()
+
+        try:
+            df = pd.read_parquet(flat_path)
+        except Exception:
+            return pd.DataFrame()
+
+        # Normalise time column name.
+        if "timestamp" not in df.columns and "datetime" in df.columns:
+            df = df.rename(columns={"datetime": "timestamp"})
+        if "timestamp" not in df.columns:
+            return pd.DataFrame()
+
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.dropna(subset=["timestamp"])
+
+        start = pd.Timestamp(start_ts)
+        end = pd.Timestamp(end_ts)
+        ts_tz = None
+        try:
+            ts_tz = df["timestamp"].dt.tz
+        except Exception:
+            ts_tz = None
+
+        if ts_tz is not None:
+            if start.tzinfo is None:
+                start = start.tz_localize(ts_tz)
+            else:
+                start = start.tz_convert(ts_tz)
+            if end.tzinfo is None:
+                end = end.tz_localize(ts_tz)
+            else:
+                end = end.tz_convert(ts_tz)
+        else:
+            # If parquet timestamps are naive but bounds are tz-aware, drop tz.
+            if start.tzinfo is not None:
+                start = start.tz_convert("UTC").tz_localize(None)
+            if end.tzinfo is not None:
+                end = end.tz_convert("UTC").tz_localize(None)
+
+        mask = (df["timestamp"] >= start) & (df["timestamp"] <= end)
+        return df.loc[mask].reset_index(drop=True)
 
     q_path_list = [f.replace("\\", "/") for f in files]
     start_str = start_ts.strftime('%Y-%m-%d %H:%M:%S')
@@ -84,8 +132,19 @@ def list_available_symbols(interval: str = '1min') -> List[str]:
     base = os.path.join(PARQUET_BASE, interval)
     if not os.path.exists(base):
         return []
-    symbols = []
+
+    # Prefer partitioned layout: data/processed/<interval>/symbol=XYZ/...
+    symbols: list[str] = []
     for item in os.listdir(base):
         if item.startswith('symbol='):
             symbols.append(item.split('=')[1])
-    return symbols
+
+    if symbols:
+        return symbols
+
+    # Fallback: flat layout: data/processed/<interval>/XYZ.parquet
+    out: list[str] = []
+    for item in os.listdir(base):
+        if item.lower().endswith('.parquet'):
+            out.append(os.path.splitext(item)[0])
+    return out

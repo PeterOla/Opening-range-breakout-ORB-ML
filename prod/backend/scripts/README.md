@@ -44,3 +44,10 @@ Places a single stop-entry (LONG or SHORT) for one symbol, with a protective sto
 This is the simplest live test when you only care that the stop-loss wiring works.
 
 python scripts/test_one_way_entry.py --broker tradezero --symbol GIS --side LONG --entry 48.98 --stop 48.92 --shares 1 --yes
+
+4) tradezero_verify_state_keep_open.py
+
+Logs into TradeZero Web, prints Active Orders + Portfolio, then keeps the browser window
+open so you can inspect it manually.
+
+python scripts/tradezero_verify_state_keep_open.py

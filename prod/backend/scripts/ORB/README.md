@@ -30,6 +30,38 @@ Notes:
 - The script refuses to submit if today's signal already has an `order_id` (use `--force` to override).
 - Start with `--dry-run` to avoid placing real orders.
 
+### Daily Top-5 (Fetch → Scan → Execute One-by-One)
+
+Runs the full daily flow and writes a markdown report under repo-root `logs/`.
+
+```bash
+cd prod/backend
+python scripts/ORB/run_today_top5_one_by_one.py --dry-run
+```
+
+Useful flags:
+- `--no-sync` — skip the data sync step
+- `--skip-fetch` — during sync, skip Alpaca fetch (use existing local parquet)
+- `--skip-enrich` — during sync, skip enrichment (includes slow SEC shares sync)
+- `--no-flatten` — skip cancel+flatten preflight
+
+### Live (TradeZero) Daily Top-5 Runner (Fetch → Scan → Signals → Execute + Report)
+
+Runs the full daily flow and writes a markdown report under repo-root `logs/` documenting
+today’s top-5 candidates, share sizing, and per-symbol execution outcomes.
+
+```bash
+cd prod/backend
+python scripts/ORB/run_today_top5_one_by_one.py
+```
+
+Recommended for UI debugging (saves HTML/CSS/screenshot snapshots under `logs/`):
+
+```bash
+cd prod/backend
+TZ_DEBUG_DUMP=1 python scripts/ORB/run_today_top5_one_by_one.py
+```
+
 ### 1. Build Full Historical Universe
 ```bash
 cd prod/backend

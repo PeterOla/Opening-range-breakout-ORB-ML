@@ -275,12 +275,17 @@ async def fetch_5min_bars(
     if target_date is not None:
         try:
             # Check which symbols we have parquet for to avoid expensive queries
-            parquet_symbols = list_available_symbols()
+            parquet_symbols = set(list_available_symbols(interval="5min"))
             matched = [s for s in symbols if s in parquet_symbols]
             parquet_bars = {}
             for s in matched:
                 # Query full day and then filter to 5-min interval when needed
-                df = query_symbol_range(s, start_ts=target_date.replace(hour=0, minute=0, second=0), end_ts=target_date.replace(hour=23, minute=59, second=59))
+                df = query_symbol_range(
+                    s,
+                    start_ts=target_date.replace(hour=0, minute=0, second=0),
+                    end_ts=target_date.replace(hour=23, minute=59, second=59),
+                    interval="5min",
+                )
                 if not df.empty:
                     # normalise column name to timestamp expected by rest of code
                     if 'ts' in df.columns and 'timestamp' not in df.columns:
