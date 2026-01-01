@@ -806,35 +806,29 @@ class TradeZero:
 
             def _set_input_value(el, value: str) -> None:
                 """Set an <input> value robustly across UI variants."""
+                # TradeZero quantity inputs have JS formatters that corrupt values when using send_keys.
+                # Use JS to set value directly and trigger events.
                 try:
-                    el.click()
+                    self.driver.execute_script(
+                        "arguments[0].removeAttribute('readonly');"
+                        "arguments[0].removeAttribute('disabled');"
+                        "arguments[0].value = '';"  # Clear first to avoid concatenation bugs
+                        "arguments[0].value = arguments[1];"
+                        "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
+                        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));"
+                        "arguments[0].dispatchEvent(new Event('blur', {bubbles:true}));",
+                        el,
+                        value,
+                    )
                 except Exception:
-                    pass
-                try:
-                    # Some TradeZero inputs are toggled readonly by order type.
-                    # Remove readonly/disabled (best-effort) before typing.
+                    # Fallback: try native Selenium (less reliable for formatted inputs)
                     try:
-                        self.driver.execute_script(
-                            "arguments[0].removeAttribute('readonly'); arguments[0].removeAttribute('disabled');",
-                            el,
-                        )
+                        el.click()
                     except Exception:
                         pass
                     el.send_keys(Keys.CONTROL, "a")
                     el.send_keys(Keys.BACKSPACE)
                     el.send_keys(value)
-                    return
-                except Exception:
-                    # Fallback: set via JS + fire input/change events.
-                    self.driver.execute_script(
-                        "arguments[0].removeAttribute('readonly');"
-                        "arguments[0].removeAttribute('disabled');"
-                        "arguments[0].value = arguments[1];"
-                        "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
-                        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
-                        el,
-                        value,
-                    )
 
             # Select a Stop order type by option text (not by index).
             # Some UI variants change element IDs, so try a small set of candidates.
@@ -1195,10 +1189,23 @@ class TradeZero:
             items = self.driver.find_elements(By.CSS_SELECTOR, "#notifications-list-1 li")
             out: list[dict] = []
             for el in items[-max_items:]:
-                txt = (el.text or "").strip()
-                if not txt:
-                    continue
-                out.append({"text": txt})
+                # Try structured parsing first (date/title/message spans)
+                try:
+                    date_el = el.find_element(By.CSS_SELECTOR, "span.date")
+                    title_el = el.find_element(By.CSS_SELECTOR, "span.title")
+                    message_el = el.find_element(By.CSS_SELECTOR, "span.message")
+                    
+                    date = (date_el.text or "").strip()
+                    title = (title_el.text or "").strip()
+                    message = (message_el.text or "").strip()
+                    
+                    if message:
+                        out.append({"date": date, "title": title, "message": message})
+                except Exception:
+                    # Fallback to full text if structured parsing fails
+                    txt = (el.text or "").strip()
+                    if txt:
+                        out.append({"date": "", "title": "", "message": txt})
             return pd.DataFrame(out)
         except Exception as e:
             print(f"Error reading notifications: {e}")

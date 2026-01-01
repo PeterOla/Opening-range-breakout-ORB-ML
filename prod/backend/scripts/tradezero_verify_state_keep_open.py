@@ -91,6 +91,36 @@ def main() -> int:
         _print_df("Active Orders", orders)
         _print_df("Portfolio", portfolio)
 
+        # --- Close all active positions ---
+        if portfolio is not None and not getattr(portfolio, "empty", True):
+            print("\nClosing all active positions...")
+            from execution.tradezero.client import Order
+            for idx, row in portfolio.iterrows():
+                symbol = str(row["symbol"]).strip()
+                qty = float(row["qty"])
+                if not symbol or qty == 0:
+                    continue
+                # Determine direction: if qty > 0, sell; if qty < 0, cover
+                if qty > 0:
+                    direction = Order.SELL
+                    close_qty = int(abs(qty))
+                else:
+                    direction = Order.COVER
+                    close_qty = int(abs(qty))
+                print(f"Closing {symbol}: {direction.value} {close_qty}")
+                try:
+                    tz.market_order(direction, symbol, close_qty)
+                except Exception as e:
+                    print(f"Error closing {symbol}: {e}")
+            print("All close orders submitted. Re-checking portfolio...")
+            # Wait a moment for orders to process
+            import time
+            time.sleep(5)
+            portfolio = tz.get_portfolio()
+            _print_df("Portfolio after close attempts", portfolio)
+        else:
+            print("No active positions to close.")
+
         print("\nBrowser is left OPEN for you to inspect.")
         input("Press Enter to close the browser and exit... ")
     finally:

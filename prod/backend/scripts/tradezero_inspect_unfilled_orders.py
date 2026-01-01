@@ -75,11 +75,19 @@ def main() -> int:
         elif getattr(notes, "empty", True):
             print("Recent notifications: (none)")
         else:
-            print("Recent notifications (up to 25):")
+            print(f"Recent notifications (showing {len(notes)}):")
             try:
-                print(notes.to_string(index=False))
+                # Show most recent first
+                print(notes.iloc[::-1].to_string(index=False))
             except Exception:
                 print(notes)
+            
+            # Highlight rejections
+            rejects = notes[notes["message"].str.contains("reject", case=False, na=False)]
+            if not rejects.empty:
+                print(f"\n⚠️  Found {len(rejects)} rejection(s):")
+                for _, row in rejects.iterrows():
+                    print(f"  [{row.get('date', '?')}] {row.get('message', '')}")
             print("")
 
         df = tz.get_active_orders()
