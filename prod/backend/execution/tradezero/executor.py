@@ -235,6 +235,7 @@ class TradeZeroExecutor:
     def close_all_positions(self) -> dict:
         positions = self.get_positions()
         closed = 0
+        errors = []
 
         for p in positions:
             symbol = p["symbol"]
@@ -249,11 +250,47 @@ class TradeZeroExecutor:
                 closed += 1
                 continue
 
+            # Try MARKET order first
             ok = self.client.market_order(direction=direction, symbol=symbol, quantity=quantity, tif=TIF.DAY)
-            if ok:
-                closed += 1
+            time.sleep(0.8)  # Wait for notification
 
-        return {"status": "success", "closed": closed, "dry_run": self.dry_run}
+            # Check for R78 rejection
+            notifs = self.client.get_notifications()
+            r78_rejected = False
+            if notifs is not None and not getattr(notifs, "empty", True):
+                for _, row in notifs.iterrows():
+                    msg = ((row.get("message") or "") + " " + (row.get("title") or "")).lower()
+                    if ("r78" in msg or "market orders are not allowed" in msg) and symbol.lower() in msg:
+                        r78_rejected = True
+                        break
+
+            if r78_rejected:
+                logger.warning(f"Market order for {symbol} rejected (R78). Falling back to LIMIT.")
+                # Fallback to LIMIT
+                quote = self.client.get_level1_quote(symbol)
+                price = 0.0
+                if quote:
+                    # To fill immediately: Sell at Bid, Cover at Ask.
+                    if direction == Order.SELL:
+                        price = float(quote.get("bid") or 0.0)
+                    else:
+                        price = float(quote.get("ask") or 0.0)
+
+                if price > 0:
+                    ok = self.client.limit_order(direction=direction, symbol=symbol, quantity=quantity, price=price, tif=TIF.DAY)
+                    if ok:
+                        closed += 1
+                    else:
+                        errors.append(f"Failed to close {symbol} (Limit fallback)")
+                else:
+                    errors.append(f"Failed to close {symbol} (R78 rejected, no quote for limit)")
+            elif ok:
+                closed += 1
+            else:
+                errors.append(f"Failed to close {symbol} (Market order failed)")
+
+        status = "success" if not errors else "partial_success" if closed > 0 else "error"
+        return {"status": status, "closed": closed, "errors": errors, "dry_run": self.dry_run}
 
     def place_entry_order(
         self,

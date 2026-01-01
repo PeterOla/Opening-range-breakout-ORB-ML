@@ -128,3 +128,16 @@ command | Out-String
 ```
 
 **For long-running commands**, let them complete naturally — don't try to pipe/filter.
+
+## TradeZero order fallback behaviour 🔧
+- When closing positions: try a **MARKET** order first for speed.
+- If a MARKET order is immediately rejected with an R78 alert ("Market orders are not allowed at this time"), the code should:
+  - Detect the rejection in the **notifications panel** (parse title/message for R78 and symbol-specific text).
+  - **Fallback** to placing a **LIMIT** order: for SELLs use the current **bid**, for COVERs use the current **ask**.
+  - Re-check notifications and the `Active Orders` / `Portfolio` tables to verify the outcome.
+- Implementation notes:
+  - Current implementation: `prod/backend/scripts/tradezero_close_positions.py` (automates MARKET, detects R78, falls back to LIMIT at bid/ask and verifies fills).
+  - Keep the detection symbol-specific where possible (R78 for that symbol) to avoid false positives from unrelated alerts.
+  - Add small waits between steps (0.5–1s) to allow notifications and UI tables to update.
+- Future enhancements: partial-fill handling, midpoint pricing/slippage tolerance, and a dry-run/logging flag for safer automation.
+
