@@ -186,10 +186,12 @@ class TradeZeroExecutor:
         }
 
     def get_positions(self) -> list[dict]:
-        if self.client is None:
+        if self.dry_run:
             return []
 
-        df = self.client.get_portfolio()
+        client = self._get_client()
+
+        df = client.get_portfolio()
         if df is None or df.empty:
             return []
 
@@ -212,10 +214,12 @@ class TradeZeroExecutor:
         return out
 
     def cancel_all_orders(self) -> dict:
-        if self.client is None:
-            return {"status": "success", "cancelled": 0, "dry_run": self.dry_run}
+        if self.dry_run:
+             return {"status": "success", "cancelled": 0, "dry_run": self.dry_run}
 
-        df = self.client.get_active_orders()
+        client = self._get_client()
+
+        df = client.get_active_orders()
         if df is None or df.empty:
             return {"status": "success", "cancelled": 0}
 
@@ -224,10 +228,7 @@ class TradeZeroExecutor:
             ref = str(row.get("ref_number", "")).strip()
             if not ref:
                 continue
-            if self.dry_run:
-                cancelled += 1
-                continue
-            if self.client.cancel_order(ref):
+            if client.cancel_order(ref):
                 cancelled += 1
 
         return {"status": "success", "cancelled": cancelled, "dry_run": self.dry_run}

@@ -1,0 +1,39 @@
+{
+  "trading-order-select-type": {
+    "tag": "select",
+    "displayed": true,
+    "enabled": true
+  },
+  "trading-order-input-symbol": {
+    "tag": "input",
+    "displayed": true,
+    "enabled": true
+  },
+  "portfolio-tab-ao-1": {
+    "tag": "a",
+    "displayed": true,
+    "enabled": true
+  },
+  "portfolio-tab-op-1": {
+    "tag": "a",
+    "displayed": true,
+    "enabled": true
+  },
+  "aoTable-1": {
+    "tag": "table",
+    "displayed": false,
+    "enabled": true
+  },
+  "opTable-1": {
+    "tag": "table",
+    "displayed": true,
+    "enabled": true
+  },
+  "order_type_options": [
+    "MKT",
+    "LMT",
+    "Stop-MKT",
+    "Stop-LMT",
+    "RANGE"
+  ]
+}

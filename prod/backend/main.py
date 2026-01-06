@@ -44,6 +44,9 @@ async def lifespan(app: FastAPI):
     # Check if we need initial data sync
     if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() != "duckdb":
         asyncio.create_task(_check_and_sync_data())
+
+    # Check for stale data (All stores) - Ensure we have data up to the last market close
+    asyncio.create_task(_check_data_freshness())
     
     yield
     
@@ -164,6 +167,119 @@ async def health_check():
         "database": "disabled" if (getattr(settings, "STATE_STORE", "duckdb") or "duckdb").lower() == "duckdb" else "enabled",
         "alpaca": "connected" if settings.ALPACA_API_KEY else "not_configured"
     }
+
+
+async def _check_data_freshness():
+    """
+    Check if data is stale on startup.
+    If the last successful sync was before the last market close, trigger a sync.
+    """
+    import asyncio
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from pathlib import Path
+    from services.market_calendar import get_market_calendar
+    from services.scheduler import job_nightly_data_sync
+
+    # Wait for server to start
+    await asyncio.sleep(5)
+
+    logger.info("🔍 Checking data freshness...")
+    
+    try:
+        calendar = get_market_calendar()
+        et = ZoneInfo("America/New_York")
+        now_et = datetime.now(et)
+        today = now_et.date()
+        
+        # Determine the "target" sync date (the date of the data we MUST have)
+        today_schedule = calendar.get_calendar_for_date(today)
+        
+        target_data_date = None
+        
+        if today_schedule:
+            # Market is open today
+            # Check if we passed the sync time (6:00 PM ET)
+            sync_cutoff = now_et.replace(hour=18, minute=0, second=0, microsecond=0)
+            
+            if now_et > sync_cutoff:
+                target_data_date = today
+            else:
+                # Need previous trading day
+                target_data_date = _get_previous_trading_day(calendar, today)
+        else:
+            # Market closed today
+            target_data_date = _get_previous_trading_day(calendar, today)
+            
+        logger.info(f"📅 Target data date (required): {target_data_date}")
+        
+        if not target_data_date:
+            logger.warning("[WARN] Could not determine target data date. Skipping check.")
+            return
+
+        # Check last sync time from logs
+        # Try to find logs directory relative to current working directory
+        possible_log_dirs = [
+            Path("logs"),
+            Path("../../logs"),
+            Path("../../../logs")
+        ]
+        
+        found_log_dir = None
+        for d in possible_log_dirs:
+            if d.exists() and d.is_dir():
+                found_log_dir = d
+                break
+        
+        if not found_log_dir:
+            logger.warning("[WARN] Log directory not found, assuming stale data.")
+            await job_nightly_data_sync()
+            return
+
+        # Find all sync logs (orb_sync_YYYYMMDD_HHMMSS.json)
+        sync_logs = list(found_log_dir.glob("orb_sync_*.json"))
+        
+        last_sync_date = None
+        
+        if sync_logs:
+            # Sort by date in filename
+            sync_logs.sort(reverse=True)
+            latest_log = sync_logs[0]
+            
+            # Parse date from filename: orb_sync_20251229_183202.json
+            try:
+                filename_parts = latest_log.name.split("_")
+                if len(filename_parts) >= 3:
+                    date_str = filename_parts[2]
+                    last_sync_date = datetime.strptime(date_str, "%Y%m%d").date()
+            except Exception as e:
+                logger.error(f"[ERROR] Failed to parse sync log filename {latest_log}: {e}")
+
+        logger.info(f"[INFO] Last sync date found: {last_sync_date}")
+
+        # Compare
+        if last_sync_date is None or last_sync_date < target_data_date:
+            logger.warning(f"[WARN] Data is stale! Last sync: {last_sync_date}, Target: {target_data_date}")
+            logger.info("[INFO] Triggering auto-sync now...")
+            await job_nightly_data_sync()
+        else:
+            logger.info("[OK] Data is up to date.")
+
+    except Exception as e:
+        logger.error(f"[ERROR] Error checking data freshness: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def _get_previous_trading_day(calendar, from_date):
+    """Helper to find previous trading day."""
+    from datetime import timedelta
+    current = from_date - timedelta(days=1)
+    for _ in range(10): # Look back 10 days max
+        if calendar.get_calendar_for_date(current):
+            return current
+        current -= timedelta(days=1)
+    return None
 
 
 if __name__ == "__main__":

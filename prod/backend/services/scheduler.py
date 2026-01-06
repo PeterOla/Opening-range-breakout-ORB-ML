@@ -42,7 +42,7 @@ async def job_nightly_data_sync():
     import sys
     from pathlib import Path
     
-    logger.info("🌙 NIGHTLY DATA SYNC triggered at 6:00 PM ET")
+    logger.info("[START] NIGHTLY DATA SYNC triggered at 6:00 PM ET")
     
     try:
         # Import unified orchestrator from DataPipeline
@@ -50,27 +50,31 @@ async def job_nightly_data_sync():
         from DataPipeline.daily_sync import DailySyncOrchestrator
         
         # Run the unified pipeline
-        logger.info("🔄 Running unified data pipeline (fetch → enrich → validate → sync)...")
+        logger.info("[INFO] Running unified data pipeline (fetch -> enrich -> validate -> sync)...")
         orchestrator = DailySyncOrchestrator()
         results = orchestrator.run()
         
         # Check if pipeline succeeded
         if results["status"] == "success":
-            logger.info("✅ Nightly data sync complete")
-            logger.info(f"   Fetch: {results['fetch']['duration_seconds']:.1f}s ({results['fetch']['rows_daily']:,} rows)")
-            logger.info(f"   Enrich: {results['enrich']['duration_seconds']:.1f}s ({results['enrich']['rows_processed']:,} rows)")
-            logger.info(f"   Validate: {results['validation']['duration_seconds']:.1f}s")
-            logger.info(f"   DB Sync: {results['db_sync']['duration_seconds']:.1f}s")
+            logger.info("[OK] Nightly data sync complete")
+            if results.get('fetch'):
+                logger.info(f"   Fetch: {results['fetch']['duration_seconds']:.1f}s ({results['fetch']['rows_daily']:,} rows)")
+            if results.get('enrich'):
+                logger.info(f"   Enrich: {results['enrich']['duration_seconds']:.1f}s ({results['enrich']['rows_processed']:,} rows)")
+            if results.get('validation'):
+                logger.info(f"   Validate: {results['validation']['duration_seconds']:.1f}s")
+            if results.get('db_sync'):
+                logger.info(f"   DB Sync: {results['db_sync']['duration_seconds']:.1f}s")
             logger.info(f"   Total: {results['total_duration_seconds']/60:.1f} minutes")
             return {"status": "success", "results": results}
         else:
-            logger.error(f"❌ Nightly data sync failed: {results['status']}")
+            logger.error(f"[ERROR] Nightly data sync failed: {results['status']}")
             for error in results['errors']:
                 logger.error(f"   - {error}")
             return {"status": "failed", "errors": results['errors']}
     
     except Exception as e:
-        logger.error(f"❌ Nightly data sync failed: {e}")
+        logger.error(f"[ERROR] Nightly data sync failed: {e}")
         import traceback
         traceback.print_exc()
         raise
@@ -175,6 +179,29 @@ async def job_premarket_check():
     except Exception as e:
         logger.error(f"❌ Pre-market check failed: {e}")
         raise
+
+
+def job_morning_cleanup():
+    """
+    9:30 AM ET - Morning Cleanup.
+    Cancels any stale orders and flattens overnight positions to ensure clean slate.
+    """
+    from execution.order_executor import get_executor
+    
+    logger.info("🧹 MORNING CLEANUP triggered at 9:30 AM ET - Ensuring clean slate")
+    
+    try:
+        executor = get_executor()
+        # 1. Cancel open orders
+        cancelled = executor.cancel_all_orders()
+        logger.info(f"   Cleared pending orders: {cancelled}")
+        # 2. Flatten positions
+        closed = executor.close_all_positions()
+        logger.info(f"   Flattened overnight positions: {closed}")
+        return {"status": "success", "orders_cancelled": cancelled, "positions_closed": closed}
+    except Exception as e:
+        logger.error(f"❌ Morning cleanup failed: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 async def job_run_orb_scanner():
@@ -519,6 +546,23 @@ def start_scheduler():
     )
     logger.info("📅 Scheduled: Sunday data sync at 6:00 PM ET")
     
+    # Job 0b: MORNING CLEANUP (Hard Reset) at 9:30 AM
+    # Closes hold-over positions from previous days and cancels stale orders
+    scheduler.add_job(
+        job_morning_cleanup,
+        CronTrigger(
+            hour=9,
+            minute=30,
+            second=0,
+            day_of_week="mon-fri",
+            timezone=ET
+        ),
+        id="morning_cleanup",
+        name="Morning Cleanup (Close & Cancel All)",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Morning Cleanup at 9:30 AM ET")
+
     # Job 1: Schedule dynamic EOD flatten at 9:30 AM (market open)
     # This will check market calendar and schedule for correct time
     # (3:55 PM regular days, 12:55 PM early close days)

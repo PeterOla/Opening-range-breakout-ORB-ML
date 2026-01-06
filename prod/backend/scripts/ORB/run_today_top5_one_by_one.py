@@ -24,6 +24,7 @@ import io
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -81,7 +82,8 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="During DataPipeline sync: skip enrichment (includes SEC shares sync).",
     )
-    ap.add_argument("--no-flatten", action="store_true", help="Skip cancel+flatten preflight")
+    ap.add_argument("--flatten", action="store_true", help="Run cancel+flatten preflight (default: False)")
+    ap.add_argument("--keep-open", action="store_true", help="Keep the process (and browser) open after execution.")
     ap.add_argument(
         "--dry-run",
         action="store_true",
@@ -97,6 +99,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="How many candidates/signals to execute (default: 5)",
+    )
+    ap.add_argument(
+        "--symbols",
+        type=str,
+        default="",
+        help="Comma-separated list of symbols to execute (filters the top-N list). Example: 'AXTI,CORT'",
     )
     return ap.parse_args()
 
@@ -243,6 +251,26 @@ def main() -> int:
     report_lines.append("## Scan + Signal Generation")
     # Use the configured broker account for equity/buying power.
     executor = get_executor()
+
+    # Force init and wait if TradeZero (to allow manual login)
+    if hasattr(executor, "_get_client") and not args.dry_run:
+        print("Initializing TradeZero client...")
+        try:
+            executor._get_client()
+            print("TradeZero client initialized.")
+            print("="*60)
+            print("ACTION REQUIRED: CHECK BROWSER")
+            print("1. Ensure you are logged in.")
+            print("2. Ensure the Trading Dashboard is visible.")
+            print("3. Waiting 30 seconds before proceeding...")
+            print("="*60)
+            for i in range(30, 0, -1):
+                print(f"Continuing in {i} seconds...", end="\r")
+                time.sleep(1)
+            print("\nProceeding...")
+        except Exception as e:
+            print(f"TradeZero init warning: {e}")
+
     account = executor.get_account()
     equity = float(account.get("equity", 0.0) or 0.0)
 
@@ -276,9 +304,9 @@ def main() -> int:
         return 1
 
     # Step 4: preflight cancel+flatten (recommended)
-    if args.no_flatten:
+    if not args.flatten:
         report_lines.append("## Preflight Flatten")
-        report_lines.append("- Skipped (--no-flatten)")
+        report_lines.append("- Skipped (default)")
         report_lines.append("")
     else:
         report_lines.append("## Preflight Flatten")
@@ -300,10 +328,20 @@ def main() -> int:
 
     # Normalise candidate list
     candidates: list[Candidate] = []
+    
+    # Filter by symbols if provided
+    target_symbols = set()
+    if args.symbols:
+        target_symbols = {s.strip().upper() for s in args.symbols.split(",") if s.strip()}
+        
     for row in candidates_raw:
+        sym = str(row.get("symbol") or "").upper().strip()
+        if target_symbols and sym not in target_symbols:
+            continue
+            
         candidates.append(
             Candidate(
-                symbol=str(row.get("symbol") or "").upper().strip(),
+                symbol=sym,
                 side=("LONG" if int(row.get("direction") or 0) >= 0 else "SHORT"),
                 rank=(int(row.get("rank")) if row.get("rank") is not None else None),
                 entry_price=float(row.get("entry_price")),
@@ -427,6 +465,16 @@ def main() -> int:
     _write_report(report_path, report_lines)
 
     print(f"Report written: {report_path}")
+
+    if args.keep_open:
+        print("\n" + "="*60)
+        print("PROCESS KEPT OPEN (--keep-open)")
+        print("The browser session (if any) will remain active.")
+        print("Press Ctrl+C to exit and close the browser.")
+        print("="*60)
+        while True:
+            time.sleep(1)
+
     return 0
 
 
