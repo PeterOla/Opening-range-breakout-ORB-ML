@@ -11,6 +11,9 @@ from pathlib import Path
 import glob
 from typing import Optional, Literal, Union
 
+# 3rd party
+import pyotp
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
@@ -43,9 +46,11 @@ class TIF(Enum):
     GTX = 'GTX'
 
 class TradeZero:
-    def __init__(self, user_name: str, password: str, headless: bool = False, home_url: Optional[str] = None):
+    def __init__(self, user_name: str, password: str, headless: bool = False, home_url: Optional[str] = None, mfa_secret: Optional[str] = None):
         self.user_name = user_name
         self.password = password
+        # Allow arg override, else fallback to env
+        self.mfa_secret = (mfa_secret or os.getenv("TRADEZERO_MFA_SECRET") or "").strip()
         self.home_url = (home_url or DEFAULT_TZ_HOME_URL).strip()
         
         def _find_cached_chromedriver() -> str | None:
@@ -339,8 +344,11 @@ class TradeZero:
 
     def _handle_order_confirmation_modal(self) -> bool:
         """If an 'Order Confirmation' modal is present, click Confirm.
+        
+        Also handles 'Short locate' warnings (Hard to Borrow) by canceling them to verify order failure.
 
-        Returns True if it handled a confirmation modal.
+        Returns True if it handled a confirmation modal (SUCCESS).
+        Returns False if no modal or handled a FAILURE modal (Short Locate / Error).
         """
         try:
             container = self.driver.find_elements(By.CSS_SELECTOR, "#simplemodal-container")
@@ -348,6 +356,30 @@ class TradeZero:
                 return False
 
             text = (container[0].text or "").lower()
+            
+            # --- CASE 1: Short Locate Warning (cancel to clear UI, report failure) ---
+            if "short locate" in text or "hard to borrow" in text:
+                print("Detected 'Hard to Borrow/Locate Required' modal - Canceling order.")
+                try:
+                    # Click Cancel
+                    cancel_btn = self.driver.find_element(By.ID, "short-locate-button-cancel")
+                    cancel_btn.click()
+                except:
+                    # Fallback generic cancel
+                    self._dismiss_modal_overlays()
+                
+                # Wait for modal to disappear to prevent blocking next actions
+                time.sleep(2.0)
+                try:
+                    WebDriverWait(self.driver, 3).until(
+                        EC.invisibility_of_element_located((By.ID, "simplemodal-container"))
+                    )
+                except Exception:
+                    pass
+                    
+                return False # Order failed
+
+            # --- CASE 2: Order Confirmation (Confirm to proceed) ---
             if "order confirmation" not in text:
                 return False
 
@@ -526,6 +558,90 @@ class TradeZero:
 
             password_form.clear()
             password_form.send_keys(self.password, Keys.RETURN)
+            
+            # --- MFA Handling ---
+            if self.mfa_secret:
+                print("Checking for MFA challenge...")
+                
+                # Wait for page transition (url change or password field gone)
+                # But simple sleep + retry is surprisingly robust for redirects
+                mfa_input = None
+                
+                # Try finding MFA input for up to 10 seconds
+                start_search = time.time()
+                while time.time() - start_search < 10.0:
+                    for selector in [
+                        (By.ID, "code2fa"),      # Found in logs (Step 2: Multi-Factor Authentication)
+                        (By.NAME, "code2fa"),
+                        (By.NAME, "code"),
+                        (By.NAME, "otp"),
+                        (By.NAME, "totp"),
+                        (By.ID, "totp"),
+                        (By.CSS_SELECTOR, "input[autocomplete='one-time-code']"),
+                        (By.CSS_SELECTOR, "input[placeholder*='code']"),
+                        (By.CSS_SELECTOR, "input[type='tel']"),
+                        (By.CSS_SELECTOR, "input.two-factor-input"),
+                    ]:
+                        try:
+                            els = self.driver.find_elements(*selector)
+                            for el in els:
+                                if el.is_displayed():
+                                    mfa_input = el
+                                    break
+                            if mfa_input: break
+                        except: continue
+                    
+                    if mfa_input:
+                        break
+                    time.sleep(1.0)
+
+                if mfa_input:
+                    print(f"MFA Input found: {mfa_input.get_attribute('name') or mfa_input.get_attribute('id')}")
+                    
+                    # Try to check "Remember this device"
+                    try:
+                        remember_cb = self.driver.find_element(By.ID, "skipMFA")
+                        if remember_cb.is_displayed() and not remember_cb.is_selected():
+                            print("Checking 'Remember this device'...")
+                            # Try clicking the input directly first
+                            try:
+                                remember_cb.click()
+                            except:
+                                # Fallback to clicking parent/label if input handles weirdly
+                                self.driver.execute_script("arguments[0].click();", remember_cb)
+                    except Exception as e:
+                        # Non-critical
+                        pass
+
+                    totp = pyotp.TOTP(self.mfa_secret.replace(" ", ""))
+                    code = totp.now()
+                    print(f"Submitting MFA Code: {code}")
+                    
+                    try:
+                        mfa_input.clear()
+                        mfa_input.send_keys(code)
+                        mfa_input.send_keys(Keys.RETURN)
+                        time.sleep(1.0) # Wait for submission
+                        
+                        # Handle potential "Verify" button if Enter didn't work
+                        # The log shows <input type="submit" name="validate" value="Submit">
+                        try:
+                            # Try standard buttons first
+                            verify_btns = self.driver.find_elements(By.XPATH, "//button[contains(translate(., 'VERIFY', 'verify'), 'verify') or contains(translate(., 'SUBMIT', 'submit'), 'submit')]")
+                            # Try input submit buttons
+                            verify_btns.extend(self.driver.find_elements(By.XPATH, "//input[@type='submit']"))
+                            
+                            for btn in verify_btns:
+                                if btn.is_displayed():
+                                    btn.click()
+                                    break
+                        except: pass
+                        
+                    except Exception as e:
+                        print(f"MFA Submission error: {e}")
+                else:
+                    print(f"No MFA input found after 10s wait. URL: {self.driver.current_url}")
+                    self._dump_ui_snapshot("mfa_not_found")
 
             # Prefer waiting for the trading panel to appear over a brittle 'Portfolio' header check.
             if self._wait_for_trading_panel_ready(timeout_s=60) or self._dom_fully_loaded(60):
@@ -606,7 +722,22 @@ class TradeZero:
             input_symbol.clear()
             input_symbol.send_keys(symbol, Keys.RETURN)
 
-            def _ask_is_valid(_driver) -> bool:
+            def _ask_is_valid_or_modal_handled(_driver) -> bool:
+                # Check for blocking modal first
+                try:
+                    modals = _driver.find_elements(By.CSS_SELECTOR, "#simplemodal-container")
+                    if modals and modals[0].is_displayed():
+                        text = modals[0].text.lower()
+                        if "short locate" in text or "hard to borrow" in text:
+                            print("DEBUG: 'Hard to Borrow' modal appeared during load_symbol. Canceling.")
+                            try:
+                                _driver.find_element(By.ID, "short-locate-button-cancel").click()
+                                time.sleep(0.5)
+                            except:
+                                pass
+                except Exception:
+                    pass
+
                 try:
                     price_text = _driver.find_element(By.ID, "trading-order-ask").text.replace(",", "")
                     return bool(price_text) and price_text.replace(".", "").isdigit() and float(price_text) > 0
@@ -614,10 +745,11 @@ class TradeZero:
                     return False
 
             try:
-                WebDriverWait(self.driver, 10).until(_ask_is_valid)
+                # Increased timeout to 25s for slow load/modals clearing
+                WebDriverWait(self.driver, 25).until(_ask_is_valid_or_modal_handled)
                 return True
             except TimeoutException:
-                print(f"Warning: Could not load symbol {symbol} (ask did not populate)")
+                print(f"Warning: Could not load symbol {symbol} (ask did not populate within 25s)")
                 self._dump_ui_snapshot(f"load_symbol_timeout_{symbol}")
                 return False
         except Exception as e:
@@ -794,15 +926,11 @@ class TradeZero:
             return False
 
     def stop_order(self, direction: Order, symbol: str, quantity: int, stop_price: float, tif: TIF = TIF.DAY) -> bool:
-        """Place a Stop order (best-effort UI automation).
-
-        Notes:
-        - TradeZero web UI variants differ by portal/version.
-        - We select an order type option containing 'Stop'.
-        - We try multiple candidate input IDs/selectors for the stop price field.
-        """
+        """Place a Stop order (best-effort UI automation)."""
         try:
-            self.load_symbol(symbol)
+            if not self.load_symbol(symbol):
+                print(f"Aborting stop order: failed to load symbol {symbol}")
+                return False
 
             def _set_input_value(el, value: str) -> None:
                 """Set an <input> value robustly across UI variants."""
@@ -1245,22 +1373,34 @@ class TradeZero:
             return False
 
     def get_equity(self):
-        """Get Account Equity."""
+        """Get Account Equity from 'Account Value' or 'Total Account Value'."""
         try:
-            # This depends on where it is displayed. 
-            # Usually in the top bar or Account tab.
-            # shner-elmo hides it, so it must be visible by default.
-            # Let's try to find an element with ID 'account-equity' or similar, or scrape the text.
-            # Based on B-Harakat, it might be in a specific div.
-            # For now, let's try to find the element that contains "Equity"
+            # Retry loop for values that might load asynchronously
+            for _ in range(5):
+                # 1. Try Specific ID found in Dashboard (h-equity-value)
+                try:
+                    el = self.driver.find_element(By.ID, "h-equity-value")
+                    text = el.text.replace("$", "").replace(",", "").strip()
+                    if text and text != "0.00":
+                        return float(text)
+                except: pass
+                
+                # 2. Try generic text search for "Account Value"
+                targets = ["Account Value", "Equity", "Total Account Value"]
+                for t in targets:
+                    try:
+                        labels = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{t}')]")
+                        for l in labels:
+                            try:
+                                sib = l.find_element(By.XPATH, "following-sibling::*")
+                                val = sib.text.replace("$", "").replace(",", "").strip()
+                                if val and val[0].isdigit() and val != "0.00":
+                                    return float(val)
+                            except: pass
+                    except: continue
+                
+                time.sleep(1.0) # Wait 1s and retry
             
-            # Fallback: Account Tab
-            self.driver.find_element(By.ID, "portfolio-tab-acc-1").click()
-            time.sleep(0.5)
-            # Look for Equity row
-            # This is a guess without seeing the DOM. 
-            # But usually it's in a table.
-            pass
-        except:
-            pass
+        except Exception as e:
+            print(f"Error scraping equity: {e}")
         return 0.0

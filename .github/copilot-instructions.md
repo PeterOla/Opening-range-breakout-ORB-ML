@@ -129,6 +129,13 @@ command | Out-String
 
 **For long-running commands**, let them complete naturally — don't try to pipe/filter.
 
+## Strategy Logic: Position Sizing 💰
+- **Method**: Equal Dollar Allocation (via Buying Power).
+- **Formula**: `Allocation = Total_Buying_Power / Top_N`.
+- **Logic**: The code calculates potential position size based on max purchasing power, NOT risk-based sizing (distance to stop).
+- **Risk Parameter**: `risk_per_trade_pct` is currently **IGNORED** for sizing calculations, though it may be used for reporting.
+- **Example**: With $30k BP and Top 5, each trade gets ~$6k allocation regardless of stop loss distance.
+
 ## TradeZero order fallback behaviour 🔧
 - When closing positions: try a **MARKET** order first for speed.
 - If a MARKET order is immediately rejected with an R78 alert ("Market orders are not allowed at this time"), the code should:

@@ -61,6 +61,7 @@ class TradeZeroExecutor:
             password=settings.TRADEZERO_PASSWORD,
             headless=bool(settings.TRADEZERO_HEADLESS),
             home_url=getattr(settings, "TRADEZERO_HOME_URL", None),
+            mfa_secret=getattr(settings, "TRADEZERO_MFA_SECRET", None),
         )
         return self.client
 
@@ -163,6 +164,9 @@ class TradeZeroExecutor:
     def get_account(self) -> dict:
         equity = 0.0
         try:
+            if not self.dry_run:
+                self._get_client()
+
             if self.client is not None:
                 equity = float(self.client.get_equity() or 0.0)
         except Exception:

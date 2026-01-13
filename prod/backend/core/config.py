@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     # Allow overriding the TradeZero web portal (different regions/identity providers)
     TRADEZERO_HOME_URL: str = "https://standard.tradezeroweb.us/"
     TRADEZERO_HEADLESS: bool = False
+    TRADEZERO_MFA_SECRET: str = "" # TOTP Secret Key (from Google Authenticator setup)
     TRADEZERO_DRY_RUN: bool = False
     TRADEZERO_LOCATE_MAX_PPS: float = 0.05  # max $/share for short locates
     TRADEZERO_DEFAULT_EQUITY: float = 100000.0  # used if we cannot read equity from UI

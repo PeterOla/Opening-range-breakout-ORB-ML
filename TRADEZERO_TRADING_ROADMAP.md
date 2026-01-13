@@ -23,6 +23,8 @@ Start executing the ORB strategy on TradeZero with automation, while keeping the
 
 - [ ] Milestone 2 — Backtests + reporting (current focus)
   - [ ] ~~Universe build joins shares as-of date~~
+  - [ ] Add Volume/Gap Filter (e.g., Gap > 2%)
+
   - [ ] ~~Backtester reads `shares_outstanding` from universe outputs~~
   - [ ] ~~Post-run report includes PnL attribution for Unknown shares~~
   - [ ] Overwrite baseline ORB backtests
