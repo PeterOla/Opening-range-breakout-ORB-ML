@@ -40,6 +40,7 @@ class ScannerFilters(BaseModel):
     min_atr: float = 0.50
     min_rvol: float = 1.0
     top_n: int = 20
+    use_sentiment_filter: bool = True
 
 
 class ScanCandidate(BaseModel):
@@ -78,6 +79,7 @@ async def run_scanner(
     min_rvol: float = Query(1.0, ge=0, description="Minimum RVOL (1.0 = 100%)"),
     top_n: int = Query(20, ge=1, le=100, description="Number of top candidates to return"),
     save_to_db: bool = Query(True, description="Save results to database"),
+    use_sentiment_filter: bool = Query(True, description="Filter universe by pre-market sentiment allowlist"),
 ):
     """
     Run the ORB stock scanner.
@@ -95,6 +97,7 @@ async def run_scanner(
         min_rvol=min_rvol,
         top_n=top_n,
         save_to_db=save_to_db,
+        use_sentiment_filter=use_sentiment_filter,
     )
     
     # Add count alias for backwards compatibility
@@ -114,6 +117,7 @@ async def run_scanner_post(filters: ScannerFilters):
         min_rvol=filters.min_rvol,
         top_n=filters.top_n,
         save_to_db=True,
+        use_sentiment_filter=filters.use_sentiment_filter,
     )
     return result
 

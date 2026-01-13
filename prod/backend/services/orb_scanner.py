@@ -9,6 +9,7 @@ from datetime import datetime, time, timedelta
 from typing import Optional
 from pathlib import Path
 from zoneinfo import ZoneInfo
+import json
 import duckdb
 import pandas as pd
 from core.config import settings
@@ -32,7 +33,7 @@ def _allowed_symbols_from_universe_setting() -> Optional[set[str]]:
         return None
 
     universe_file_map = {
-        "micro": "universe_micro.parquet",
+        "micro": "universe_micro_full.parquet",
         "small": "universe_small.parquet",
         "large": "universe_large.parquet",
         "micro_small": "universe_micro_small.parquet",
@@ -60,6 +61,31 @@ def _allowed_symbols_from_universe_setting() -> Optional[set[str]]:
         raise ValueError(f"Universe parquet missing 'ticker' column: {universe_path}")
 
     return {str(s).upper().strip() for s in df["ticker"].dropna().unique().tolist()}
+
+
+def _get_sentiment_allowlist(target_date: datetime.date) -> Optional[set[str]]:
+    """
+    Load sentiment allowlist for the given date.
+    Returns:
+        - Set of allowed symbols if file exists.
+        - None if file does not exist (indicating no filter).
+    """
+    # Expected path: data/sentiment/allowlist_YYYY-MM-DD.json
+    date_str = target_date.strftime("%Y-%m-%d")
+    path = _repo_root() / "data" / "sentiment" / f"allowlist_{date_str}.json"
+    
+    if not path.exists():
+        return None
+        
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+            # data structure: {"allowed": ["AAPL", ...], "rejected": [...]}
+            allowed = data.get("allowed", [])
+            return {str(s).upper().strip() for s in allowed}
+    except Exception as e:
+        print(f"Error loading sentiment allowlist {path}: {e}")
+        return None
 
 
 def get_opening_range_from_bars(df: pd.DataFrame, target_date: Optional[datetime] = None) -> Optional[dict]:
@@ -204,6 +230,7 @@ async def scan_orb_candidates(
     min_rvol: float = 1.0,
     top_n: int = 20,
     save_to_db: bool = True,
+    use_sentiment_filter: bool = True,
 ) -> dict:
     """
     Full ORB scan using hybrid data approach.
@@ -223,6 +250,21 @@ async def scan_orb_candidates(
     
     try:
         allowed_symbols = _allowed_symbols_from_universe_setting()
+
+        # --- Sentiment Filter Integration ---
+        if use_sentiment_filter:
+            sentiment_allowed = _get_sentiment_allowlist(today)
+            if sentiment_allowed is not None:
+                print(f"[Sentiment] Allowlist found with {len(sentiment_allowed)} symbols.")
+                if allowed_symbols is None:
+                    allowed_symbols = sentiment_allowed
+                else:
+                    original_count = len(allowed_symbols)
+                    allowed_symbols = allowed_symbols.intersection(sentiment_allowed)
+                    print(f"[Sentiment] Filtered universe: {original_count} -> {len(allowed_symbols)} symbols")
+            else:
+                print(f"[Sentiment] Filter enabled but no allowlist found for {today}. Skipping.")
+        # ------------------------------------
 
         # Step 1: Get universe with pre-computed metrics from local Parquet via DuckDB.
         print("Fetching universe (Parquet + DuckDB)...")

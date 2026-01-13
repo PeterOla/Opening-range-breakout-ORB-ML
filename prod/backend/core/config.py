@@ -82,7 +82,7 @@ class Settings(BaseSettings):
 
     # Universe selection for live scanning/execution
     # Options: all, micro, small, large, micro_small, micro_small_unknown, micro_unknown, unknown
-    ORB_UNIVERSE: str = "micro_small"
+    ORB_UNIVERSE: str = "micro"
 
     # Execution broker
     # Options: alpaca, tradezero
