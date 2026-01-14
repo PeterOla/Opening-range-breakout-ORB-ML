@@ -19,126 +19,167 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from prod.backend.scripts.ORB.build_universe import load_5min_full, load_daily, serialize_bars
+    from prod.backend.scripts.ORB.build_universe import load_5min_full, load_daily, serialize_bars, extract_or
 except ImportError as e:
     print(f"Import Error: {e}")
     sys.exit(1)
 
-INPUT_FILE = PROJECT_ROOT / "data" / "backtest" / "orb" / "universe" / "universe_sentiment_only.parquet"
-OUTPUT_FILE = PROJECT_ROOT / "data" / "backtest" / "orb" / "universe" / "universe_sentiment_ready.parquet"
+INPUT_SCORED_NEWS = PROJECT_ROOT / "data" / "research" / "news" / "news_micro_full_1y_scored.parquet"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "backtest" / "orb" / "universe" / "research_2021_sentiment"
+THRESHOLDS = [0.60, 0.70, 0.80, 0.90, 0.95]
+
+# Ensure directory exists
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def generate_base_universe(df_news, threshold):
+    """Filter news > threshold and group by date/ticker to make a base universe list."""
+    # Filter
+    filtered = df_news[df_news['positive_score'] > threshold].copy()
+    
+    # Standardize Dates
+    # If using 'timestamp' is UTC, convert to Eastern Date
+    # Assuming 'trade_date' is just the date component of the news for now (Research simplification)
+    # Ideally: News after 16:00 ET -> Next Trade Date.
+    # For now: Just use date().
+    if 'timestamp' in filtered.columns:
+        filtered['timestamp'] = pd.to_datetime(filtered['timestamp'], utc=True)
+        # Convert to Eastern Time approximately (UTC-5)
+        filtered['trade_date'] = filtered['timestamp'].dt.tz_convert('America/New_York').dt.date
+    
+    # Deduplicate: If multiple news items for same ticker on same day, take MAX score
+    # Group by [trade_date, symbol]
+    # Rename 'symbol' to 'ticker' if needed
+    if 'symbol' in filtered.columns:
+        filtered = filtered.rename(columns={'symbol': 'ticker'})
+    elif 'symbols' in filtered.columns:
+        filtered = filtered.rename(columns={'symbols': 'ticker'}) # Handle plural if present
+
+    universe = filtered.groupby(['trade_date', 'ticker'])['positive_score'].max().reset_index()
+    return universe
 
 def main():
-    if not INPUT_FILE.exists():
-        print(f"Input file not found: {INPUT_FILE}")
+    if not INPUT_SCORED_NEWS.exists():
+        print(f"Input file not found: {INPUT_SCORED_NEWS}")
         return
 
-    print(f"Loading {INPUT_FILE.name}...")
-    df = pd.read_parquet(INPUT_FILE)
-    print(f"Candidates: {len(df)}")
+    print(f"Loading Scored News: {INPUT_SCORED_NEWS.name}")
+    df_raw = pd.read_parquet(INPUT_SCORED_NEWS)
+    print(f"Loaded {len(df_raw)} news items.")
     
-    # Init columns
-    df['bars_json'] = None
-    df['atr_14'] = np.nan
-    df['avg_volume_14'] = np.nan
-    df['shares_outstanding'] = np.nan
-    df['prev_close'] = np.nan
-    
-    # Process by Ticker (optimization to load files once)
-    tickers = df['ticker'].unique()
-    print(f"Processing {len(tickers)} unique tickers...")
-    
-    # We can probably parallelize this, but for < 1000 items, sequential is fine?
-    # Actually, 2234 items. Sequential might take a minute.
-    
-    enriched_rows = []
-    
-    for ticker in tqdm(tickers):
-        # 1. Load Data
-        daily_df = load_daily(ticker)
-        bars_df = load_5min_full(ticker)
+    # Loop through thresholds
+    for thresh in THRESHOLDS:
+        print(f"\n--- Generating Universe for Threshold > {thresh} ---")
         
-        if daily_df is None or bars_df is None:
+        # 1. Generate Base List
+        base_df = generate_base_universe(df_raw, thresh)
+        print(f"Candidates: {len(base_df)}")
+        
+        # Init Enrichment Columns
+        base_df['bars_json'] = None
+        base_df['atr_14'] = np.nan
+        base_df['avg_volume_14'] = np.nan
+        base_df['shares_outstanding'] = np.nan
+        base_df['prev_close'] = np.nan
+        
+        # Process by Ticker (optimization to load files once PER universe... 
+        # actually smarter to load data once and loop thresholds, but let's keep it simple for legacy compatibility)
+        tickers = base_df['ticker'].unique()
+        print(f"Processing {len(tickers)} unique tickers...")
+        
+        enriched_rows = []
+        
+        for ticker in tqdm(tickers):
+            # 1. Load Data
+            daily_df = load_daily(ticker)
+            bars_df = load_5min_full(ticker)
+            
+            if daily_df is None or bars_df is None:
+                continue
+                
+            # Get subset of universe for this ticker
+            ticker_mask = base_df['ticker'] == ticker
+            ticker_rows = base_df[ticker_mask]
+            
+            for idx, row in ticker_rows.iterrows():
+                trade_date = row['trade_date']
+                
+                # Ensure trade_date is date object
+                if isinstance(trade_date, pd.Timestamp):
+                    trade_date = trade_date.date()
+                
+                # Match Daily Data
+                # Ensure date column is date object for comparison
+                daily_df['date_obj'] = pd.to_datetime(daily_df['date']).dt.date
+                daily_matches = daily_df[daily_df['date_obj'] == trade_date]
+                
+                if daily_matches.empty:
+                    continue
+                    
+                daily_row = daily_matches.iloc[0]
+                
+                # Match Intraday Data
+                # bars_df has 'date_et' from load_5min_full
+                day_bars = bars_df[bars_df['date_et'] == trade_date].copy()
+                if day_bars.empty:
+                    continue
+                
+                # Extract OR Data
+                or_data = extract_or(day_bars)
+                if not or_data:
+                    continue
+                
+                # Calculate Direction
+                direction = 0
+                if or_data['or_close'] > or_data['or_open']:
+                    direction = 1
+                elif or_data['or_close'] < or_data['or_open']:
+                    direction = -1
+
+                # Calculate RVOL (Relative Volume)
+                # Formula: (OR_Volume * 78) / Avg_Vol_14
+                # 78 = 390 trading minutes / 5 min bars
+                rvol = 0.0
+                avg_vol = daily_row.get('avg_volume_14', 0)
+                if avg_vol and avg_vol > 0:
+                    rvol = (or_data['or_volume'] * 78.0) / avg_vol
+                
+                # Enrich
+                row_dict = row.to_dict()
+                row_dict['bars_json'] = serialize_bars(day_bars)
+                row_dict['atr_14'] = daily_row.get('atr_14', np.nan)
+                row_dict['avg_volume_14'] = daily_row.get('avg_volume_14', np.nan)
+                row_dict['shares_outstanding'] = daily_row.get('shares_outstanding', np.nan)
+                
+                # Add OR Columns & Metrics
+                row_dict['or_open'] = or_data['or_open']
+                row_dict['or_high'] = or_data['or_high']
+                row_dict['or_low'] = or_data['or_low']
+                row_dict['or_close'] = or_data['or_close']
+                row_dict['or_volume'] = or_data['or_volume']
+                row_dict['direction'] = direction
+                row_dict['rvol'] = rvol # Adding RVOL
+                
+                # Note: 'prev_close' in our daily files is pre-calculated as T-1 close.
+                # If not, we might be taking T's close.
+                row_dict['prev_close'] = daily_row.get('prev_close', daily_row.get('close', np.nan)) 
+                
+                enriched_rows.append(row_dict)
+
+        if not enriched_rows:
+            print(f"Warning: No valid rows enriched for threshold {thresh}")
             continue
-            
-        # Get subset of universe for this ticker
-        ticker_mask = df['ticker'] == ticker
-        ticker_rows = df[ticker_mask]
+
+        result_df = pd.DataFrame(enriched_rows)
         
-        for idx, row in ticker_rows.iterrows():
-            trade_date = row['trade_date']
-            trade_date_ts = pd.Timestamp(trade_date)
-            
-            # Daily Metrics (For the *previous* day technically? Or 'current'?)
-            # build_universe.py usually takes the row matching the date
-            # In build_universe.py: `daily_row = df_daily[df_daily['date'] == date]`
-            # and `prev_close` was `daily_row['close']`? 
-            # No, `prev_close` should be previous day close.
-            # But the dataset usually aligns 'date' to midnight UTC.
-            
-            # Let's match `build_universe.py` logic:
-            # `mask = (df_daily['date'] >= start_ts) ...`
-            # For each day: `trading_date = daily_row['date'].date()`
-            # So `date` in daily parquet IS the trading date.
-            
-            daily_matches = daily_df[daily_df['date'] == trade_date_ts]
-            if daily_matches.empty:
-                continue
-                
-            daily_row = daily_matches.iloc[0]
-            
-            # 5-Min Bars for this day
-            # bars_df has 'date_et' (from import) if we rely on load_5min_full adding it?
-            # Wait, `load_5min_full` inside `build_universe.py` adds `date_et`.
-            # Let's verify `load_5min_full` implementation in the imported module.
-            # Yes it should.
-            
-            day_bars = bars_df[bars_df['date_et'] == trade_date.date() if hasattr(trade_date, 'date') else trade_date].copy()
-            if day_bars.empty:
-                continue
-                
-            # Create enriched dict
-            # We copy original row and update
-            new_row = row.to_dict()
-            new_row['bars_json'] = serialize_bars(day_bars)
-            new_row['atr_14'] = daily_row.get('atr_14')
-            new_row['avg_volume_14'] = daily_row.get('avg_volume_14')
-            new_row['shares_outstanding'] = daily_row.get('shares_outstanding')
-            new_row['prev_close'] = daily_row.get('close') # This is actually Close of T. 
-            # Ideally we want Prev Close (T-1).
-            # But `build_universe` logic was: `'prev_close': float(daily_row['close'])`
-            # Wait, if `daily_row` is T, then `close` is T's close.
-            # We want T-1 close for Gap calculation.
-            # `build_universe` comment said `# Approx prev close logic simplified`.
-            # If fast_backtest recalculates gap using bars, it takes `bars[0].open` vs `prev_close`.
-            # If we provide T's close, Gap = (Open - Close_T) / Close_T? No.
-            # We need T-1.
-            
-            # Let's try to get T-1
-            # daily_df is sorted by date?
-            # Index of daily_row?
-            try:
-                # Assuming daily_df is sorted
-                # Find index of match
-                match_idx = daily_matches.index[0]
-                # If match_idx > 0, prev is match_idx - 1?
-                # We can't rely on integer index unless reset.
-                # Let's shift.
-                pass
-            except:
-                pass
-                
-            enriched_rows.append(new_row)
-            
-    if not enriched_rows:
-        print("No enriched rows generated.")
-        return
+        # Add Rvol Rank (Daily Rank)
+        # Group by trade_date and rank by RVOL descending
+        result_df['rvol_rank'] = result_df.groupby('trade_date')['rvol'].rank(method='first', ascending=False)
         
-    final_df = pd.DataFrame(enriched_rows)
-    print(f"Enriched {len(final_df)} rows.")
-    
-    # Save
-    final_df.to_parquet(OUTPUT_FILE)
-    print(f"✅ Saved Enriched Universe to {OUTPUT_FILE}")
+        # Save
+        filename = f"universe_sentiment_{str(thresh)}.parquet"
+        out_path = OUTPUT_DIR / filename
+        result_df.to_parquet(out_path)
+        print(f"✅ Saved enriched universe: {out_path} ({len(result_df)} rows)")
 
 if __name__ == "__main__":
     main()

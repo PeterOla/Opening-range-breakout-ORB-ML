@@ -275,7 +275,9 @@ def run_strategy(
     leverage: float = LEVERAGE,
     comm_share: float = 0.005,
     comm_min: float = 0.99,
-    limit_retest: bool = False
+    limit_retest: bool = False,
+    sizing_mode: str = "equal", # 'equal' or 'risk'
+    risk_per_trade_pct: float = 0.01 # used if sizing_mode='risk'
 ):
     """Run strategy on pre-built universe."""
     
@@ -463,13 +465,27 @@ def run_strategy(
             stop_distance_pct = abs(entry_level - stop_level) / entry_level * 100.0
             
             # Calculate position size
+            stop_dist_abs = abs(entry_level - stop_level)
+            
             if compound:
-                # Equal Split Sizing: Margin = Equity / N
-                position_size = allocation_per_trade
-                # Leverage is applied via 'allocation_pool' calculation above, so don't double count inside simulate_trade
-                # Actually, simulate_trade takes 'position_size' as the BASE amount and applies LEVERAGE if apply_leverage=True
-                # If we pass the LEVERAGED amount as position_size, we should set apply_leverage=False
-                apply_lev = False 
+                if sizing_mode == 'risk' and stop_dist_abs > 0:
+                    # Risk-Based Sizing: shares = (Equity * Risk%) / StopDist
+                    risk_amt = current_equity * risk_per_trade_pct
+                    shares = risk_amt / stop_dist_abs
+                    # Convert to Notional Value (Shares * Entry)
+                    position_size = shares * entry_level
+                    # Ensure we don't exceed max leverage for this single trade
+                    max_pos = current_equity * leverage
+                    if position_size > max_pos:
+                        position_size = max_pos
+                    apply_lev = False # It is already leveraged notionally
+                else:
+                    # Equal Split Sizing: Margin = Equity / N
+                    position_size = allocation_per_trade
+                    # Leverage is applied via 'allocation_pool' calculation above, so don't double count inside simulate_trade
+                    # Actually, simulate_trade takes 'position_size' as the BASE amount and applies LEVERAGE if apply_leverage=True
+                    # If we pass the LEVERAGED amount as position_size, we should set apply_leverage=False
+                    apply_lev = False 
             else:
                 position_size = initial_capital
                 apply_lev = True
@@ -682,12 +698,14 @@ def main():
     ap.add_argument('--limit-retest', action='store_true', help='Entry fills only on retest of breakout level (conservative limit fill)')
     ap.add_argument('--start-date', type=str, default=None, help='Start date (YYYY-MM-DD), inclusive')
     ap.add_argument('--end-date', type=str, default=None, help='End date (YYYY-MM-DD), inclusive')
+    ap.add_argument('--sizing-mode', type=str, default='equal', choices=['equal', 'risk'], help='Position sizing mode')
+    ap.add_argument('--risk-pct', type=float, default=0.01, help='Risk per trade as decimal (0.01 = 1%%)')
     
     args = ap.parse_args()
     
     # Auto-calculate risk per trade from daily risk target
     risk_per_trade = args.daily_risk / args.top_n
-    print(f"Risk model: Equal Dollar Allocation (Equity / {args.top_n} candidates)")
+    print(f"Risk model: {args.sizing_mode.upper()} (Risk={args.risk_pct*100:.1f}%)" if args.sizing_mode == 'risk' else f"Risk model: Equal Dollar Allocation (Equity / {args.top_n} candidates)")
     print(f"Filters: ATR >= {args.min_atr}, Volume >= {args.min_volume:,}")
     print(f"Params: Stop={args.stop_atr_scale}xATR, Leverage={args.leverage}x, Comm=${args.comm_min} min / ${args.comm_share}/sh")
     
@@ -721,7 +739,9 @@ def main():
         spread_pct=args.spread_pct,
         limit_retest=args.limit_retest,
         start_date=args.start_date,
-        end_date=args.end_date
+        end_date=args.end_date,
+        sizing_mode=args.sizing_mode,
+        risk_per_trade_pct=args.risk_pct
     )
 
 

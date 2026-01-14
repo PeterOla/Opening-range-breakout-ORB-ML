@@ -21,8 +21,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
     from prod.backend.scripts.data.annotate_news_sentiment import SentimentAnnotator
-except ImportError:
-    print("Error: Could not import SentimentAnnotator.")
+except ImportError as e:
+    print(f"Error: Could not import SentimentAnnotator. {e}")
+    # Try alternate import path setup if needed
     sys.exit(1)
 
 INPUT_FILE = PROJECT_ROOT / "data" / "research" / "news" / "news_micro_full_1y.parquet"

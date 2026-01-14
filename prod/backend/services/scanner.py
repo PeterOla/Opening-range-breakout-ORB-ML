@@ -25,6 +25,7 @@ from services.universe import (
     compute_atr,
     compute_avg_volume,
 )
+from services.sentiment_scanner import scan_sentiment_candidates
 
 
 # Trading hours (Eastern Time)
@@ -120,21 +121,24 @@ def compute_rvol(current_or_volume: float, daily_df: pd.DataFrame, period: int =
 
 
 async def scan_universe(
-    min_price: float = 5.0,
-    max_price: float = 500.0,
-    min_avg_volume: float = 1_000_000,
+    min_price: float = 2.0, # Adjusted for Micro-cap (Research implied lower price range)
+    max_price: float = 50.0,
+    min_avg_volume: float = 100_000, # Matched Research (100k)
     min_atr: float = 0.50,
     min_rvol: float = 1.0,
-    top_n: int = 20,
+    top_n: int = 5, # Matched Research (Top 5)
     atr_period: int = 14,
     volume_period: int = 14,
+    use_sentiment: bool = True, # Enable Sentiment Filter
+    sentiment_threshold: float = 0.90,
+    side_filter: str = "long" # Enforce Long Only by default matching research
 ) -> list[dict]:
     """
-    Full universe scan applying ORB criteria.
+    Full universe scan applying ORB criteria with Sentiment Overlay.
     
     Pipeline:
-    1. Fetch all tradeable assets
-    2. Get current snapshots (price filter)
+    1. (Optional) Sentiment Filter: Fetch news -> Score -> Filter > 0.90
+    2. Fetch Snapshots (Price filter) for candidates
     3. Fetch daily bars (ATR, avg volume filters)
     4. Fetch 5min bars (opening range calculation)
     5. Compute RVOL and rank
@@ -143,16 +147,28 @@ async def scan_universe(
     Returns list of candidate stocks with all metrics.
     """
     results = []
-    
-    # Step 1: Get all tradeable assets
-    print("Fetching tradeable assets...")
-    assets = await fetch_tradeable_assets()
-    print(f"Found {len(assets)} tradeable assets")
+    candidates = []
+
+    # Step 1: Sentiment Filter (The "Funnel")
+    if use_sentiment:
+        print(f"Starting Sentiment Scan (Threshold > {sentiment_threshold})...")
+        candidates = await scan_sentiment_candidates(threshold=sentiment_threshold)
+        print(f"Sentiment Scan complete. Candidates: {len(candidates)}")
+        
+        if not candidates:
+            print("No sentiment candidates found. Stopping scan.")
+            return []
+    else:
+        # Fallback to scanning everything (Old behavior)
+        print("Fetching all tradeable assets (Sentiment Filter OFF)...")
+        assets = await fetch_tradeable_assets()
+        candidates = [a["symbol"] for a in assets]
+        print(f"Found {len(candidates)} total assets on Alpaca")
     
     # Step 2: Get snapshots for price filtering
-    all_symbols = [a["symbol"] for a in assets]
-    print(f"Fetching snapshots for {len(all_symbols)} symbols...")
-    snapshots = await fetch_snapshots_batch(all_symbols)
+    # Now we only fetch snapshots for the sentiment candidates (Massive speedup)
+    print(f"Fetching snapshots for {len(candidates)} symbols...")
+    snapshots = await fetch_snapshots_batch(candidates)
     print(f"Got snapshots for {len(snapshots)} symbols")
     
     # Quick price filter
@@ -162,6 +178,9 @@ async def scan_universe(
     ]
     print(f"Price filter ({min_price}-{max_price}): {len(price_filtered)} symbols")
     
+    if not price_filtered:
+        return []
+
     # Step 3: Fetch daily bars for remaining symbols
     print(f"Fetching daily bars for {len(price_filtered)} symbols...")
     daily_bars = await fetch_daily_bars(price_filtered, lookback_days=atr_period + 5)
@@ -213,6 +232,12 @@ async def scan_universe(
         # Skip doji candles (no direction)
         if or_data["or_direction"] == 0:
             continue
+            
+        # Side Filter (Research Validation: Long Only)
+        if side_filter == "long" and or_data["or_direction"] != 1:
+            continue
+        elif side_filter == "short" and or_data["or_direction"] != -1:
+            continue
         
         # Compute RVOL
         rvol = compute_rvol(or_data["or_volume"], daily_bars.get(sym), volume_period)
@@ -231,7 +256,7 @@ async def scan_universe(
             "direction_label": "LONG" if or_data["or_direction"] == 1 else "SHORT",
             "or_volume": int(or_data["or_volume"]),
             "entry_level": round(or_data["or_high"], 2) if or_data["or_direction"] == 1 else round(or_data["or_low"], 2),
-            "stop_distance": round(0.10 * stock["atr"], 2),  # 10% of ATR
+            "stop_distance": round(0.10 * stock["atr"], 2),  # 10% of ATR (User Preference: Stability > Drawdown)
         })
     
     print(f"RVOL filter (>= {min_rvol}): {len(candidates)} candidates")

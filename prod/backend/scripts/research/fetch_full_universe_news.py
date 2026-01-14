@@ -30,27 +30,25 @@ DAYS_LOOKBACK = 365
 BATCH_SIZE = 40  # Symbols per request (safe limit)
 
 def fetch_news_batch(client, symbols, start_dt, end_dt):
-    """Fetch news for a batch of symbols with pagination."""
+    """Fetch news for a batch of symbols using Time-Walking pagination (Backwards)."""
     all_items = []
     
-    # Alpaca 'next_page_token' logic can be tricky, relying on date loop is safer 
-    # if volume is huge, but for micro caps, simple pagination should work.
-    
-    page_token = None
+    current_end = end_dt
     
     while True:
         try:
             req = NewsRequest(
                 symbols=",".join(symbols),
                 start=start_dt,
-                end=end_dt,
+                end=current_end,
                 limit=50,
-                page_token=page_token,
-                include_content=False
+                include_content=False,
+                sort="DESC" # Explicitly request newest first
             )
+            
             resp = client.get_news(req)
             
-            # Robust handling of response (NewsSet or similar)
+            # Robust extraction
             items = []
             if hasattr(resp, "news"):
                 items = resp.news
@@ -61,18 +59,12 @@ def fetch_news_batch(client, symbols, start_dt, end_dt):
                 if isinstance(items, dict) and "news" in items:
                     items = items["news"]
             
-            if not items:  # Fallback: maybe the response is iterable?
-                try:
-                    items = list(resp)
-                except TypeError:
-                    pass
-
             if not items:
                 break
                 
             for n in items:
                 all_items.append({
-                    "symbol": n.symbols[0] if n.symbols else "UNKNOWN", # Primary symbol
+                    "symbol": n.symbols[0] if n.symbols else "UNKNOWN",
                     "timestamp": n.created_at,
                     "headline": n.headline,
                     "summary": n.summary,
@@ -80,11 +72,23 @@ def fetch_news_batch(client, symbols, start_dt, end_dt):
                     "source": n.source
                 })
             
-            page_token = getattr(resp, "next_page_token", None)
-            if not page_token:
+            # Time Walking Logic
+            # items[0] is newest, items[-1] is oldest (because Sort=DESC)
+            oldest_ts = items[-1].created_at
+            
+            # If we returned less than limit, we likely exhausted the range
+            if len(items) < 50:
                 break
                 
-            time.sleep(0.1) # Rate limit niceness
+            # Move cursor to just before the oldest item
+            current_end = oldest_ts - timedelta(microseconds=1)
+            
+            # Safety break if we went past start
+            if current_end <= start_dt:
+                break
+                
+            # Rate limit niceness
+            time.sleep(0.1) 
             
         except Exception as e:
             print(f"Error fetching batch: {e}")
