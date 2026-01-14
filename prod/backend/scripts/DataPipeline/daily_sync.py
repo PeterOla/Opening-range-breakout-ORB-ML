@@ -26,33 +26,40 @@ from .universe_builder import UniverseBuilder
 from .shares_sync import sync_missing_shares
 
 # Configure logging
-LOG_DIR = LOGGING_CONFIG["log_dir"]
-LOG_FORMAT = LOGGING_CONFIG["log_format"]
-LOG_LEVEL = logging.INFO
-
-# Setup root logger
-root_logger = logging.getLogger()
-root_logger.setLevel(LOG_LEVEL)
-
-# Console handler with UTF-8 encoding (fixes Windows cp1252 encoding errors)
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(LOG_LEVEL)
-console_formatter = logging.Formatter(LOG_FORMAT)
-console_handler.setFormatter(console_formatter)
-# Force UTF-8 encoding for console output
-if hasattr(console_handler.stream, 'buffer'):
-    console_handler.stream = io.TextIOWrapper(console_handler.stream.buffer, encoding='utf-8', errors='replace')
-root_logger.addHandler(console_handler)
-
-# File handler
-log_filename = f"orb_sync_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-file_handler = logging.FileHandler(LOG_DIR / log_filename)
-file_handler.setLevel(LOG_LEVEL)
-file_formatter = logging.Formatter(LOG_FORMAT)
-file_handler.setFormatter(file_formatter)
-root_logger.addHandler(file_handler)
-
 logger = logging.getLogger(__name__)
+
+def setup_pipeline_logging():
+    LOG_DIR = LOGGING_CONFIG["log_dir"]
+    LOG_FORMAT = LOGGING_CONFIG["log_format"]
+    LOG_LEVEL = logging.INFO
+
+    # Setup root logger - ONLY if no handlers exist (prevents duplication when imported)
+    root_logger = logging.getLogger()
+    if root_logger.hasHandlers():
+        return
+
+    root_logger.setLevel(LOG_LEVEL)
+
+    # Console handler with UTF-8 encoding (fixes Windows cp1252 encoding errors)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(LOG_LEVEL)
+    console_formatter = logging.Formatter(LOG_FORMAT)
+    console_handler.setFormatter(console_formatter)
+    
+    # Force UTF-8 encoding for console output
+    if hasattr(console_handler.stream, 'buffer'):
+        console_handler.stream = io.TextIOWrapper(console_handler.stream.buffer, encoding='utf-8', errors='replace')
+    root_logger.addHandler(console_handler)
+
+    # File handler
+    log_filename = f"orb_sync_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    file_handler = logging.FileHandler(LOG_DIR / log_filename, encoding='utf-8')
+    file_handler.setLevel(LOG_LEVEL)
+    file_handler.setFormatter(console_formatter)
+    root_logger.addHandler(file_handler)
+
+if __name__ == "__main__":
+    setup_pipeline_logging()
 
 
 class DailySyncOrchestrator:

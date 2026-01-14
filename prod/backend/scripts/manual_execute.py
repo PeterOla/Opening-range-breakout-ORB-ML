@@ -1,4 +1,12 @@
 import sys
+
+# Force UTF-8 for Windows consoles to support emojis 🚀
+if sys.platform == "win32":
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+
 import logging
 from pathlib import Path
 from datetime import date

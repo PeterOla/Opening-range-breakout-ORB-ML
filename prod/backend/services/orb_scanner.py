@@ -13,7 +13,7 @@ import json
 import duckdb
 import pandas as pd
 from core.config import settings
-from services.universe import fetch_5min_bars
+from services.universe import fetch_5min_bars, load_universe_from_parquet
 from state.duckdb_store import DuckDBStateStore
 
 
@@ -56,11 +56,12 @@ def _allowed_symbols_from_universe_setting() -> Optional[set[str]]:
             f"Universe file not found for ORB_UNIVERSE={key}: tried {p1} and {p2}"
         )
 
-    df = pd.read_parquet(universe_path)
-    if "ticker" not in df.columns:
-        raise ValueError(f"Universe parquet missing 'ticker' column: {universe_path}")
-
-    return {str(s).upper().strip() for s in df["ticker"].dropna().unique().tolist()}
+    # Use robust shared loader
+    try:
+        symbols_list = load_universe_from_parquet(universe_path)
+        return set(symbols_list)
+    except Exception as e:
+        raise ValueError(f"Failed to load universe from {universe_path}: {e}")
 
 
 def _get_sentiment_allowlist(target_date: datetime.date) -> Optional[set[str]]:

@@ -19,6 +19,7 @@ from alpaca.data.requests import NewsRequest
 from core.config import settings
 from db.database import SessionLocal
 from db.models import Ticker
+from services.universe import load_universe_from_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +77,8 @@ def get_micro_cap_universe(limit_shares: int = 50_000_000) -> List[str]:
         
         if fallback_path.exists():
             logger.info(f"Using fallback universe: {fallback_path}")
-            df = pd.read_parquet(fallback_path)
-            if "symbol" in df.columns:
-                return df["symbol"].tolist()
-            elif "ticker" in df.columns:
-                return df["ticker"].tolist()
+            return load_universe_from_parquet(fallback_path)
+
     except Exception as e:
         logger.error(f"Fallback universe failed: {e}")
 

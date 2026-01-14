@@ -404,3 +404,21 @@ def compute_avg_volume(df: pd.DataFrame, period: int = 14) -> Optional[float]:
     
     latest = avg_vol.iloc[-1] if not avg_vol.empty else None
     return latest if pd.notna(latest) else None
+
+
+def load_universe_from_parquet(file_path: Path) -> list[str]:
+    """
+    Load a list of symbols from a parquet file safely.
+    Handles 'ticker' vs 'symbol' column name discrepancies.
+    """
+    if not file_path.exists():
+        raise FileNotFoundError(f"Universe file not found: {file_path}")
+        
+    df = pd.read_parquet(file_path)
+    
+    if "ticker" in df.columns:
+        return [str(s).upper().strip() for s in df["ticker"].dropna().unique().tolist()]
+    elif "symbol" in df.columns:
+        return [str(s).upper().strip() for s in df["symbol"].dropna().unique().tolist()]
+    else:
+        raise ValueError(f"Universe parquet missing 'ticker' or 'symbol' column: {file_path}")

@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-01-14T13:31:28.765152",
+  "total_symbols": 7598,
+  "fetch": {
+    "status": "success",
+    "duration_seconds": 830.553326,
+    "total_symbols": 7598,
+    "successful": 7598,
+    "failed": 0,
+    "skipped": 0,
+    "rows_daily": 52629,
+    "rows_5min": 3093072
+  },
+  "enrich": {
+    "status": "success",
+    "duration_seconds": 315.30943,
+    "total_symbols": 7598,
+    "successful": 7598,
+    "failed": 0,
+    "rows_processed": 7538797
+  },
+  "validation": {
+    "status": "passed",
+    "duration_seconds": 37.646248,
+    "errors": [],
+    "warnings": [
+      "Stale data for 63 symbols (>14 days old)",
+      "2807 symbols have incomplete data"
+    ]
+  },
+  "total_duration_seconds": 1314.74424,
+  "status": "success",
+  "errors": []
+}

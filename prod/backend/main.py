@@ -1,6 +1,15 @@
 """
 FastAPI main entry point for ORB trading system.
 """
+import sys
+
+# Force UTF-8 for Windows consoles to support emojis 🚀
+if sys.platform == "win32":
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -17,6 +26,9 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s'
 )
+# Silence noisy loggers
+logging.getLogger("watchfiles.main").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
