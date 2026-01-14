@@ -18,6 +18,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from execution.order_executor import flatten_eod, get_executor
 from services.market_calendar import get_market_calendar, is_early_close_today
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -314,6 +315,11 @@ async def job_auto_execute_orb():
         equity = float(account.get("equity", 1500))
         buying_power = float(account.get("buying_power", equity))
         
+        # SAFETY: Override Buying Power if configured (Testing Mode)
+        if settings.ORB_TEST_BUYING_POWER > 0:
+            logger.warning(f"🛡️ TEST MODE: Overriding Broker Buying Power ${buying_power:,.2f} -> ${settings.ORB_TEST_BUYING_POWER:,.2f}")
+            buying_power = settings.ORB_TEST_BUYING_POWER
+
         # Cap each position by buying power / number of positions
         max_position_value = buying_power / strategy["top_n"]
         

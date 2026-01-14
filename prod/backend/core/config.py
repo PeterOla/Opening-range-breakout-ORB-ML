@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     TRADEZERO_DRY_RUN: bool = False
     TRADEZERO_LOCATE_MAX_PPS: float = 0.05  # max $/share for short locates
     TRADEZERO_DEFAULT_EQUITY: float = 100000.0  # used if we cannot read equity from UI
+    
+    # Safety / Testing
+    # If > 0, overrides actual broker buying power. Use this to CAP exposure on testing days.
+    # overrides: account["buying_power"]
+    ORB_TEST_BUYING_POWER: float = 0.0
     TRADEZERO_LEVERAGE: float = 6.0  # Intraday leverage provided by TradeZero
     
     # Risk Management
