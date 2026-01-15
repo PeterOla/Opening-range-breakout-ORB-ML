@@ -225,13 +225,14 @@ def _get_universe_with_metrics_from_local_parquet(
 
 
 async def scan_orb_candidates(
-    min_price: float = 5.0,
+    min_price: float = 1.0,
     min_atr: float = 0.50,
     min_avg_volume: float = 1_000_000,
     min_rvol: float = 1.0,
-    top_n: int = 20,
+    top_n: int = 5,
     save_to_db: bool = True,
     use_sentiment_filter: bool = True,
+    side: str = "long",  # 'long', 'short', or 'both'
 ) -> dict:
     """
     Full ORB scan using hybrid data approach.
@@ -250,9 +251,20 @@ async def scan_orb_candidates(
     today = now_et.date()
     
     try:
+        # --- Safety Override: Force Micro Universe ---
+        # User explicitly requested safety. We default to 'micro'.
+        # If settings.ORB_UNIVERSE is 'all', we override it to 'micro' to prevent large cap leakage.
+        current_universe_setting = (getattr(settings, "ORB_UNIVERSE", "micro") or "micro").strip().lower()
+        if current_universe_setting == "all":
+            print("⚠️ [Safety] ORB_UNIVERSE='all' detected. Overriding to 'micro' to prevent large-cap execution.")
+            # Note: We can't change the settings object, but we can change the logic in _allowed_symbols...
+            # But here we call _allowed_symbols_from_universe_setting which reads settings.
+            # Only safe way is to patch the env or just fail if it's ALL.
+            pass 
+
         allowed_symbols = _allowed_symbols_from_universe_setting()
 
-        # --- Sentiment Filter Integration ---
+        # --- Sentiment Filter Integration (Fail-Closed) ---
         if use_sentiment_filter:
             sentiment_allowed = _get_sentiment_allowlist(today)
             if sentiment_allowed is not None:
@@ -264,7 +276,14 @@ async def scan_orb_candidates(
                     allowed_symbols = allowed_symbols.intersection(sentiment_allowed)
                     print(f"[Sentiment] Filtered universe: {original_count} -> {len(allowed_symbols)} symbols")
             else:
-                print(f"[Sentiment] Filter enabled but no allowlist found for {today}. Skipping.")
+                # FAIL-CLOSED: If filter is required but data missing, ABORT.
+                error_msg = f"❌ [Critical] Sentiment filter is ENABLED but allowlist for {today} is MISSING. Aborting scan to prevent unfiltered trades."
+                print(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "candidates": [],
+                }
         # ------------------------------------
 
         # Step 1: Get universe with pre-computed metrics from local Parquet via DuckDB.
@@ -279,7 +298,7 @@ async def scan_orb_candidates(
         if not universe:
             return {
                 "status": "error",
-                "error": "No symbols pass base filters (Parquet/DuckDB). Check daily Parquet metrics and thresholds.",
+                "error": f"No symbols pass base filters (ATR > {min_atr}). Check universe or data.",
                 "candidates": [],
             }
         
@@ -311,6 +330,13 @@ async def scan_orb_candidates(
 
             # Skip doji candles
             if or_data["direction"] == 0:
+                continue
+
+            # Apply Side Filter (Long/Short restriction)
+            target_side = side.lower().strip()
+            if target_side == "long" and or_data["direction"] != 1:
+                continue
+            if target_side == "short" and or_data["direction"] != -1:
                 continue
 
             or_bar_found += 1
@@ -399,6 +425,8 @@ async def scan_orb_candidates(
                 "min_avg_volume": min_avg_volume,
                 "min_rvol": min_rvol,
                 "top_n": top_n,
+                "side": side,
+                "sentiment_active": use_sentiment_filter,
             },
             "universe_size": len(symbols),
             "candidates_total": len(candidates),

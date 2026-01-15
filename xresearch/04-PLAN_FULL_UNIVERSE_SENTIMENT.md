@@ -197,3 +197,26 @@ Detailed comparison of the optimal threshold (0.90). Data source: `daily_perform
 2. **Wide Stops Issue**: With a 10% ATR stop, the stop distance is naturally wide. To strictly adhere to a 1% or 2% risk limit, the position size must be heavily reduced, leaving significant buying power idle.
 3. **Equal Dollar Superiority**: allocations of `Equity / 5` allow winners to run with meaningful size regardless of their volatility.
 4. **Action**: **Rejected**. The live strategy will remain on **Equal Dollar Allocation**.
+
+## 13. Final Live Strategy Configuration (Jan 15, 2026)
+
+Based on the audit and comparative experiments, the following configuration is locked for Live Trading:
+
+### A. Universe & Filters
+*   **Universe**: Micro-Cap Only (Shares < 50M).
+*   **Price Cap**: None (Aligned with Backtest).
+*   **Sentiment**: **> 0.90 Positive Score** (FinBERT).
+    *   *Constraint*: Fail-Closed (System aborts if sentiment data is missing).
+*   **Direction**: **Long Only**.
+
+### B. Risk Management
+*   **Stop Loss**: **10% of ATR** (Wide stop for survival).
+    *   *Rationale*: Backtesting showed +26% net profit improvement over 5% ATR, despite deep drawdowns. The higher win rate (22.7%) compensates for the risk.
+*   **Position Sizing**: **Equal Dollar Allocation** (Equity / Top N).
+    *   *Rationale*: Risk-based sizing kills momentum. We allocate fixed buying power slots to the top candidates.
+
+### C. Execution
+*   **Top N**: 5 Candidates (Focus on highest RVOL).
+*   **Entry**: Break of OR High (5-min).
+*   **Exit**: Market Close (MOC) or Stop Loss.
+

@@ -11,6 +11,8 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding='utf-8')
 
 import logging
+from datetime import datetime
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,9 +24,17 @@ from core.config import settings
 from services.scheduler import start_scheduler, stop_scheduler
 
 # Configure logging
+log_dir = Path(__file__).parent / "logs"
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / f"orb_app_{datetime.now().strftime('%Y-%m-%d')}.log"
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s'
+    format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(log_file, encoding='utf-8')
+    ]
 )
 # Silence noisy loggers
 logging.getLogger("watchfiles.main").setLevel(logging.WARNING)

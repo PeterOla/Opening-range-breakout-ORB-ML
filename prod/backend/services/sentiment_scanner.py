@@ -84,9 +84,19 @@ def get_micro_cap_universe(limit_shares: int = 50_000_000) -> List[str]:
 
     return []
 
-def fetch_universe_news(symbols: List[str], lookback_hours: int = 24) -> Dict[str, List[str]]:
+def fetch_universe_news(
+    symbols: List[str], 
+    lookback_hours: int = 24,
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None
+) -> Dict[str, List[str]]:
     """
-    Fetch news headlines for the given symbols (Last N hours).
+    Fetch news headlines for the given symbols.
+    Args:
+        symbols: List of ticker symbols.
+        lookback_hours: Hours to look back (default 24). keys off NOW if start/end not provided.
+        start_dt: Explicit start datetime (timezone aware preferred).
+        end_dt: Explicit end datetime (timezone aware preferred).
     Returns: {symbol: [headline, headline, ...]}
     """
     if not symbols:
@@ -98,8 +108,12 @@ def fetch_universe_news(symbols: List[str], lookback_hours: int = 24) -> Dict[st
         logger.error(f"Failed to init Alpaca NewsClient: {e}")
         return {}
     
-    end = datetime.now()
-    start = end - timedelta(hours=lookback_hours)
+    if start_dt and end_dt:
+        start = start_dt
+        end = end_dt
+    else:
+        end = datetime.now()
+        start = end - timedelta(hours=lookback_hours)
     
     # Alpaca News Request Batching
     # Documentation suggests request by list of symbols works.

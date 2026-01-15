@@ -153,6 +153,48 @@ async def schedule_todays_eod_flatten():
     logger.info(f"✅ EOD flatten scheduled for {flatten_dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
 
+async def job_generate_daily_sentiment():
+    """
+    9:00 AM ET - Generate Daily Sentiment Allowlist.
+    Scans micro-cap universe for positive news (>0.90) and saves allowlist for ORB Scanner.
+    """
+    from services.sentiment_scanner import scan_sentiment_candidates
+    import json
+    from pathlib import Path
+
+    logger.info("🌤️ Generating Daily Sentiment Allowlist at 9:00 AM ET")
+    
+    try:
+        # Run scan (Default threshold 0.90)
+        candidates = await scan_sentiment_candidates(threshold=0.90)
+        
+        # Save to file
+        today = datetime.now(ET).date()
+        # prod/backend/services/scheduler.py -> ... -> data
+        output_dir = Path(__file__).resolve().parents[2] / "data" / "sentiment"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        filename = f"allowlist_{today}.json"
+        filepath = output_dir / filename
+        
+        output = {
+            "date": str(today),
+            "allowed": candidates,
+            "threshold": 0.90,
+            "generated_at": datetime.now(ET).isoformat()
+        }
+        
+        with open(filepath, "w") as f:
+            json.dump(output, f, indent=2)
+            
+        logger.info(f"✅ Sentiment allowlist generated: {len(candidates)} symbols saved to {filename}")
+        return {"status": "success", "candidates": len(candidates), "file": str(filepath)}
+        
+    except Exception as e:
+        logger.error(f"❌ Sentiment generation failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 async def job_premarket_check():
     """
     9:25 AM ET - Pre-market health check.
@@ -601,6 +643,22 @@ def start_scheduler():
     )
     logger.info("📅 Scheduled: EOD flatten fallback at 3:55 PM ET (Mon-Fri)")
     
+    # Job 1c: Generate Sentiment Allowlist at 9:00 AM ET (Mon-Fri)
+    # MUST run before ORB scanner (9:35 AM)
+    scheduler.add_job(
+        job_generate_daily_sentiment,
+        CronTrigger(
+            hour=9,
+            minute=0,
+            day_of_week="mon-fri",
+            timezone=ET,
+        ),
+        id="generate_sentiment",
+        name="Generate Sentiment Allowlist (9:00 AM)",
+        replace_existing=True,
+    )
+    logger.info("📅 Scheduled: Sentiment generation at 9:00 AM ET (Mon-Fri)")
+
     # Job 2: Pre-market check at 9:25 AM ET (Mon-Fri)
     scheduler.add_job(
         job_premarket_check,
