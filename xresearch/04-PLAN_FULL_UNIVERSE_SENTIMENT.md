@@ -152,6 +152,19 @@ Detailed comparison of the optimal threshold (0.90). Data source: `daily_perform
   4. `universe_sentiment_0.90.parquet`
   5. `universe_sentiment_0.95.parquet`
 
+### E. Backtest Execution (Reproduce Results)
+- **Script**: `prod/backend/scripts/ORB/fast_backtest.py`
+- **Command** (from `prod/backend` directory):
+```powershell
+python scripts\ORB\fast_backtest.py --universe research_2021_sentiment/universe_sentiment_0.9.parquet --top-n 5 --side long --run-name "FINAL_Sent_090_Top5_5ATR" --stop-atr-scale 0.05 --min-atr 0.50 --min-volume 100000 --leverage 6.0 --comm-share 0.005 --comm-min 0.99 --spread-pct 0.001 --initial-capital 1500
+```
+- **Expected Results**:
+  - Profit Factor: **10.03**
+  - Win Rate: **17.6%**
+  - Final Profit: **$50.7M**
+  - Total Trades: 846
+  - Entered: 717
+
 ## 11. Experiment: Stop Loss Sensitivity (10% vs 5% ATR) (Jan 14, 2026)
 
 **Question**: Does a wider stop (10% ATR) allow enough "breathing room" to catch more winners, or does it just increase losses?

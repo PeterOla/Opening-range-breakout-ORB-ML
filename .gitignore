@@ -31,5 +31,7 @@ ml_orb_5m/models/checkpoints/
 
 # Logs and Results
 *.log
+logs/
+**/logs/
 orb_5m/core/results/
 reports/

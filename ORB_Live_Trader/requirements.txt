@@ -1,0 +1,35 @@
+# Core data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# HTTP requests (for AlphaVantage)
+requests>=2.31.0
+
+# Database
+duckdb>=0.10.0
+
+# Alpaca market data & news
+alpaca-py>=0.15.0
+
+# Sentiment analysis
+torch>=2.0.0
+transformers>=4.30.0
+
+# Web automation (TradeZero)
+selenium>=4.15.0
+pyotp>=2.9.0
+
+# Scheduling
+APScheduler>=3.10.0
+
+# Timezone handling
+pytz>=2023.3
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Terminal colors (optional, used by prod/backend TradeZero client)
+termcolor>=2.3.0
+
+# Logging
+colorlog>=6.7.0  # Optional: colored console logs

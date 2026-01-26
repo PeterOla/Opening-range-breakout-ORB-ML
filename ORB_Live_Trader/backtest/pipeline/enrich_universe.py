@@ -1,15 +1,11 @@
 """
-Enrich Sentiment Universe (Research)
-====================================
-Takes the raw sentiment universe (Date, Ticker, Score) and enriches it with:
+Enrich Sentiment Universe (Backtest Pipeline)
+=============================================
+Takes the raw sentiment universe and enriches it with:
 1. 5-min Price Data (bars_json)
 2. Daily Metrics (ATR, AvgVol, Shares)
 
-Attribution Modes:
-- rolling_24h: News from 09:30 yesterday to 09:30 today → used for today
-- premarket: News from 00:00 midnight to 09:30 today → used for today
-
-Output: universe_sentiment_ready.parquet (Ready for fast_backtest.py)
+Output: ORB_Live_Trader/backtest/data/backtest/orb/universe/research_2021_sentiment_ROLLING24H/universe_sentiment_0.9.parquet
 """
 
 import sys
@@ -19,207 +15,216 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from datetime import time, datetime, timedelta
+import json
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(PROJECT_ROOT))
+# Paths
+PIPELINE_DIR = Path(__file__).parent
+BACKTEST_DIR = PIPELINE_DIR.parent
+DATA_DIR = BACKTEST_DIR / "data"
+INPUT_SCORED_NEWS = DATA_DIR / "news" / "news_micro_full_1y_scored.parquet"
 
-try:
-    from prod.backend.scripts.ORB.build_universe import load_5min_full, load_daily, serialize_bars, extract_or
-except ImportError as e:
-    print(f"Import Error: {e}")
-    sys.exit(1)
+# Sibling path for main data (assuming original structure available or mapped)
+# We need 5min and daily processed data. 
+# Assuming they reside in PROJECT_ROOT/data/processed (as per original script)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+MAIN_DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR_5MIN = MAIN_DATA_DIR / "processed" / "5min"
+DATA_DIR_DAILY = MAIN_DATA_DIR / "processed" / "daily"
+UNIVERSE_ROOT = DATA_DIR / "universe" # Local output
 
-INPUT_SCORED_NEWS = PROJECT_ROOT / "data" / "research" / "news" / "news_micro_full_1y_scored.parquet"
 THRESHOLDS = [0.60, 0.70, 0.80, 0.90, 0.95]
 
+# -----------------------------------------------------------------------------
+# Helpers (Ported/Inlined to be self-contained)
+# -----------------------------------------------------------------------------
+
+OR_START = time(9, 30)
+OR_END = time(16, 0)
+
+def load_daily(symbol: str):
+    p = DATA_DIR_DAILY / f"{symbol}.parquet"
+    if not p.exists():
+        return None
+    try:
+        df = pd.read_parquet(p)
+        if 'date' not in df.columns or df.empty:
+            return None
+        df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+        return df
+    except Exception:
+        return None
+
+def load_5min_full(symbol: str):
+    p = DATA_DIR_5MIN / f"{symbol}.parquet"
+    if not p.exists():
+        return None
+    try:
+        df = pd.read_parquet(p)
+        if df.empty or 'datetime' not in df.columns:
+            return None
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df['date_et'] = df['datetime'].dt.date
+        df['time'] = df['datetime'].dt.time
+        return df
+    except Exception:
+        return None
+
+def extract_or(bars: pd.DataFrame):
+    or_row = bars[bars['time'] == OR_START]
+    if not or_row.empty:
+        r = or_row.iloc[0]
+        return {
+            'or_open': float(r['open']),
+            'or_high': float(r['high']),
+            'or_low': float(r['low']),
+            'or_close': float(r['close']),
+            'or_volume': float(r['volume']),
+        }
+    
+    rth_mask = (bars['time'] >= OR_START) & (bars['time'] <= OR_END)
+    rth_bars = bars[rth_mask].sort_values('datetime')
+    if rth_bars.empty:
+        return None
+    
+    r = rth_bars.iloc[0]
+    return {
+        'or_open': float(r['open']),
+        'or_high': float(r['high']),
+        'or_low': float(r['low']),
+        'or_close': float(r['close']),
+        'or_volume': float(r['volume']),
+    }
+
+def serialize_bars(bars: pd.DataFrame) -> str:
+    bars_clean = bars[['datetime', 'open', 'high', 'low', 'close', 'volume']].copy()
+    bars_clean['datetime'] = bars_clean['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    return bars_clean.to_json(orient='records')
+
+# -----------------------------------------------------------------------------
+# Core Logic
+# -----------------------------------------------------------------------------
+
 def generate_base_universe(df_news, threshold, mode='rolling_24h'):
-    """
-    Filter news > threshold and attribute to correct trade_date based on mode.
-    
-    Args:
-        df_news: DataFrame with timestamp and positive_score
-        threshold: Sentiment threshold (0.0-1.0)
-        mode: Attribution method
-            - 'rolling_24h': News from 09:30 yesterday to 09:30 today → trade today
-            - 'premarket': News from 00:00 midnight to 09:30 today → trade today
-    
-    Returns:
-        DataFrame with [trade_date, ticker, positive_score]
-    """
-    # Filter by threshold
     filtered = df_news[df_news['positive_score'] > threshold].copy()
     
-    # Convert timestamp to Eastern Time
     if 'timestamp' in filtered.columns:
         filtered['timestamp'] = pd.to_datetime(filtered['timestamp'], utc=True)
         filtered['timestamp_et'] = filtered['timestamp'].dt.tz_convert('America/New_York')
         filtered['news_date'] = filtered['timestamp_et'].dt.date
         filtered['news_time'] = filtered['timestamp_et'].dt.time
     
-    # Attribution Logic
     if mode == 'rolling_24h':
-        # News from 09:30 yesterday to 09:30 today → trade today
-        # Implementation: 
-        #   - News before 09:30 today → trade today (came from yesterday 09:30+)
-        #   - News at/after 09:30 today → trade next business day
         market_open = time(9, 30)
-        
         def assign_trade_date(row):
             if row['news_time'] < market_open:
-                # Before 09:30 → use same day (includes overnight from yesterday 09:30+)
                 return row['news_date']
             else:
-                # At/after 09:30 → shift to next business day
                 return (pd.to_datetime(row['news_date']) + pd.tseries.offsets.BDay(1)).date()
-        
         filtered['trade_date'] = filtered.apply(assign_trade_date, axis=1)
     
     elif mode == 'premarket':
-        # News from 00:00 midnight to 09:30 today → trade today
-        # News at/after 09:30 → trade next business day
         market_open = time(9, 30)
-        
         def assign_trade_date(row):
             if row['news_time'] < market_open:
-                # Pre-market → same day
                 return row['news_date']
             else:
-                # Market hours or after → next business day
                 return (pd.to_datetime(row['news_date']) + pd.tseries.offsets.BDay(1)).date()
-        
         filtered['trade_date'] = filtered.apply(assign_trade_date, axis=1)
-    
     else:
-        raise ValueError(f"Unknown mode: {mode}. Use 'rolling_24h' or 'premarket'")
+        raise ValueError(f"Unknown mode: {mode}")
     
-    # Rename symbol → ticker
     if 'symbol' in filtered.columns:
         filtered = filtered.rename(columns={'symbol': 'ticker'})
-    elif 'symbols' in filtered.columns:
-        filtered = filtered.rename(columns={'symbols': 'ticker'})
-
-    # Deduplicate: If multiple news items for same ticker on same day, take MAX score
+    
+    # Deduplicate: Max score per day/ticker
     universe = filtered.groupby(['trade_date', 'ticker'])['positive_score'].max().reset_index()
     return universe
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Enrich sentiment universe with price data")
-    parser.add_argument('--mode', type=str, default='rolling_24h',
-                        choices=['rolling_24h', 'premarket'],
-                        help="News attribution mode: rolling_24h (09:30 yesterday - 09:30 today) or premarket (midnight - 09:30 today)")
+    parser = argparse.ArgumentParser(description="Enrich sentiment universe")
+    parser.add_argument('--mode', type=str, default='rolling_24h', choices=['rolling_24h', 'premarket'])
     args = parser.parse_args()
     
     if not INPUT_SCORED_NEWS.exists():
         print(f"Input file not found: {INPUT_SCORED_NEWS}")
         return
 
-    # Set output directory based on mode
+    # Folder specific to mode
     if args.mode == 'rolling_24h':
-        OUTPUT_DIR = PROJECT_ROOT / "data" / "backtest" / "orb" / "universe" / "research_2021_sentiment_ROLLING24H"
-    elif args.mode == 'premarket':
-        OUTPUT_DIR = PROJECT_ROOT / "data" / "backtest" / "orb" / "universe" / "research_2021_sentiment_PREMARKET"
+        OUTPUT_DIR = UNIVERSE_ROOT / "research_2021_sentiment_ROLLING24H"
     else:
-        OUTPUT_DIR = PROJECT_ROOT / "data" / "backtest" / "orb" / "universe" / "research_2021_sentiment_CLEAN"
+        OUTPUT_DIR = UNIVERSE_ROOT / "research_2021_sentiment_PREMARKET"
     
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    print(f"=" * 80)
-    print(f"ENRICH SENTIMENT UNIVERSE - MODE: {args.mode.upper()}")
-    print(f"=" * 80)
-    print(f"Attribution: ", end="")
-    if args.mode == 'rolling_24h':
-        print("News from 09:30 yesterday to 09:30 today → trade today")
-    elif args.mode == 'premarket':
-        print("News from 00:00 midnight to 09:30 today → trade today")
-    print(f"Output: {OUTPUT_DIR}")
-    print(f"=" * 80)
-
-    print(f"\nLoading Scored News: {INPUT_SCORED_NEWS.name}")
+    print(f"Loading Scored News: {INPUT_SCORED_NEWS.name}")
     df_raw = pd.read_parquet(INPUT_SCORED_NEWS)
     print(f"Loaded {len(df_raw)} news items.")
     
-    # Loop through thresholds
     for thresh in THRESHOLDS:
         print(f"\n--- Generating Universe for Threshold > {thresh} (Mode: {args.mode}) ---")
         
-        # 1. Generate Base List
         base_df = generate_base_universe(df_raw, thresh, mode=args.mode)
         print(f"Candidates: {len(base_df)}")
         
-        # Init Enrichment Columns
         base_df['bars_json'] = None
         base_df['atr_14'] = np.nan
         base_df['avg_volume_14'] = np.nan
         base_df['shares_outstanding'] = np.nan
         base_df['prev_close'] = np.nan
         
-        # Process by Ticker
         tickers = base_df['ticker'].unique()
         print(f"Processing {len(tickers)} unique tickers...")
         
         enriched_rows = []
         
         for ticker in tqdm(tickers):
-            # 1. Load Data
             daily_df = load_daily(ticker)
             bars_df = load_5min_full(ticker)
             
             if daily_df is None or bars_df is None:
                 continue
                 
-            # Get subset of universe for this ticker
             ticker_mask = base_df['ticker'] == ticker
             ticker_rows = base_df[ticker_mask]
             
             for idx, row in ticker_rows.iterrows():
                 trade_date = row['trade_date']
-                
-                # Ensure trade_date is date object
                 if isinstance(trade_date, pd.Timestamp):
                     trade_date = trade_date.date()
                 
-                # Match Daily Data
                 daily_df['date_obj'] = pd.to_datetime(daily_df['date']).dt.date
                 daily_matches = daily_df[daily_df['date_obj'] == trade_date]
                 
                 if daily_matches.empty:
                     continue
-                    
                 daily_row = daily_matches.iloc[0]
                 
-                # Match Intraday Data
                 day_bars = bars_df[bars_df['date_et'] == trade_date].copy()
                 if day_bars.empty:
                     continue
                 
-                # Extract OR Data
                 or_data = extract_or(day_bars)
                 if not or_data:
                     continue
                 
-                # Calculate Direction
                 direction = 0
                 if or_data['or_close'] > or_data['or_open']:
                     direction = 1
                 elif or_data['or_close'] < or_data['or_open']:
                     direction = -1
 
-                # Calculate RVOL
                 rvol = 0.0
                 avg_vol = daily_row.get('avg_volume_14', 0)
                 if avg_vol and avg_vol > 0:
                     rvol = (or_data['or_volume'] * 78.0) / avg_vol
                 
-                # Enrich
                 row_dict = row.to_dict()
                 row_dict['bars_json'] = serialize_bars(day_bars)
                 row_dict['atr_14'] = daily_row.get('atr_14', np.nan)
                 row_dict['avg_volume_14'] = daily_row.get('avg_volume_14', np.nan)
                 row_dict['shares_outstanding'] = daily_row.get('shares_outstanding', np.nan)
                 
-                # Add OR Columns & Metrics
                 row_dict['or_open'] = or_data['or_open']
                 row_dict['or_high'] = or_data['or_high']
                 row_dict['or_low'] = or_data['or_low']
@@ -227,7 +232,6 @@ def main():
                 row_dict['or_volume'] = or_data['or_volume']
                 row_dict['direction'] = direction
                 row_dict['rvol'] = rvol
-                
                 row_dict['prev_close'] = daily_row.get('prev_close', daily_row.get('close', np.nan)) 
                 
                 enriched_rows.append(row_dict)
@@ -237,11 +241,8 @@ def main():
             continue
 
         result_df = pd.DataFrame(enriched_rows)
-        
-        # Add Rvol Rank
         result_df['rvol_rank'] = result_df.groupby('trade_date')['rvol'].rank(method='first', ascending=False)
         
-        # Save
         filename = f"universe_sentiment_{str(thresh)}.parquet"
         out_path = OUTPUT_DIR / filename
         result_df.to_parquet(out_path)

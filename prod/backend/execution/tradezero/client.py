@@ -772,23 +772,25 @@ class TradeZero:
     def get_market_data(self, symbol: str):
         """Return market data for a symbol."""
         Data = namedtuple('Data', ['open', 'high', 'low', 'close', 'volume', 'last', 'ask', 'bid'])
-        if not self.load_symbol(symbol):
-            return None
+        for _ in range(3): # Retry loop
+            try:
+                if not self.load_symbol(symbol):
+                    return None
+                
+                element_ids = [
+                    'trading-order-open', 'trading-order-high', 'trading-order-low', 
+                    'trading-order-close', 'trading-order-vol', 'trading-order-p', 
+                    'trading-order-ask', 'trading-order-bid'
+                ]
+                values = []
+                for eid in element_ids:
+                    val = self.driver.find_element(By.ID, eid).text.replace(',', '')
+                    values.append(float(val) if val and val != "---" else 0.0)
+                return Data._make(values)
+            except Exception as e:
+                time.sleep(1)
         
-        try:
-            element_ids = [
-                'trading-order-open', 'trading-order-high', 'trading-order-low', 
-                'trading-order-close', 'trading-order-vol', 'trading-order-p', 
-                'trading-order-ask', 'trading-order-bid'
-            ]
-            values = []
-            for eid in element_ids:
-                val = self.driver.find_element(By.ID, eid).text.replace(',', '')
-                values.append(float(val) if val else 0.0)
-            return Data._make(values)
-        except Exception as e:
-            print(f"Error getting data for {symbol}: {e}")
-            return None
+        return None
 
     def locate_stock(self, symbol: str, share_amount: int, max_price: float = 0.05, debug: bool = True):
         """
@@ -1114,34 +1116,50 @@ class TradeZero:
                 pass
 
             table = self.driver.find_element(By.ID, "opTable-1")
-            rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
-
-            out: list[dict] = []
-            for r in rows:
-                tds = r.find_elements(By.CSS_SELECTOR, "td")
-                if not tds:
-                    continue
-
-                # Empty-state row is usually a single-cell message.
-                if len(tds) == 1 and "no open positions" in (tds[0].text or "").lower():
-                    return pd.DataFrame()
-
-                symbol = (tds[0].text or "").strip().upper()
-                if not symbol:
-                    continue
-
-                qty_txt = ""
-                if len(tds) >= 3:
-                    qty_txt = tds[2].text or ""
-                qty_txt = qty_txt.replace(",", "").strip()
+            
+            for _ in range(3): # Retry loop for stale elements
                 try:
-                    qty = float(qty_txt)
+                    rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+                    out = []
+                    for r in rows:
+                        tds = r.find_elements(By.CSS_SELECTOR, "td")
+                        if not tds or len(tds) < 3: continue
+                        
+                        # Empty-state row
+                        if "no open positions" in (tds[0].text or "").lower():
+                            return pd.DataFrame()
+
+                        def _safe_float(txt):
+                            try:
+                                return float(txt.replace(",", "").replace("$", "").strip())
+                            except:
+                                return 0.0
+
+                        symbol = (tds[0].text or "").strip().upper()
+                        if not symbol: continue
+
+                        qty = _safe_float(tds[2].text)
+                        
+                        # FILTER: Only include actual open positions
+                        if qty <= 0: continue
+
+                        last_price = _safe_float(tds[3].text) if len(tds) >= 4 else 0.0
+                        avg_price = _safe_float(tds[4].text) if len(tds) >= 5 else 0.0
+                        pnl_dollar = _safe_float(tds[6].text) if len(tds) >= 7 else 0.0
+
+                        out.append({
+                            "symbol": symbol, 
+                            "qty": qty, 
+                            "last_price": last_price,
+                            "avg_price": avg_price,
+                            "unrealized_pnl": pnl_dollar
+                        })
+                    return pd.DataFrame(out)
                 except Exception:
-                    qty = 0.0
-
-                out.append({"symbol": symbol, "qty": qty})
-
-            return pd.DataFrame(out)
+                    time.sleep(1)
+                    table = self.driver.find_element(By.ID, "opTable-1")
+            
+            return pd.DataFrame() # Fallback
         except Exception as e:
             print(f"Error reading portfolio: {e}")
             return None
@@ -1178,52 +1196,42 @@ class TradeZero:
             except Exception:
                 headers = []
 
-            rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
-
-            out: list[dict] = []
-            for r in rows:
-                order_id = (r.get_attribute("order-id") or "").strip()
-                tds = r.find_elements(By.CSS_SELECTOR, "td")
-                if not tds:
-                    continue
-
-                # Empty-state row (single message cell)
-                if len(tds) == 1:
-                    continue
-
-                cell_texts = [((td.text or "").strip()) for td in tds]
-
-                # Map all cells to headers if possible (trim/pad as needed).
-                row_dict: dict[str, str] = {}
-                if headers and len(headers) == len(cell_texts):
-                    row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
-                elif headers and len(headers) < len(cell_texts):
-                    row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
-                    for j in range(len(headers), len(cell_texts)):
-                        row_dict[f"col_{j}"] = cell_texts[j]
-                else:
-                    row_dict = {f"col_{i}": cell_texts[i] for i in range(len(cell_texts))}
-
-                # Heuristic mapping: the first cell is usually cancel button.
-                # We primarily need a stable ref number for cancel_order().
-                symbol = ""
-                if len(tds) >= 3:
-                    symbol = (tds[2].text or "").strip().upper()
-
-                qty_txt = ""
-                if len(tds) >= 5:
-                    qty_txt = tds[4].text or ""
-                qty_txt = qty_txt.replace(",", "").strip()
+            for _ in range(3): # Retry loop
                 try:
-                    qty = float(qty_txt)
+                    rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
+                    out = []
+                    for r in rows:
+                        order_id = (r.get_attribute("order-id") or "").strip()
+                        tds = r.find_elements(By.CSS_SELECTOR, "td")
+                        if not tds or len(tds) == 1: continue
+
+                        cell_texts = [((td.text or "").strip()) for td in tds]
+
+                        row_dict = {}
+                        if headers and len(headers) == len(cell_texts):
+                            row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
+                        
+                        symbol = (tds[2].text or "").strip().upper() if len(tds) >= 3 else ""
+                        
+                        qty_txt = (tds[4].text or "").replace(",", "").strip() if len(tds) >= 5 else "0"
+                        try:
+                            qty = float(qty_txt)
+                        except:
+                            qty = 0.0
+
+                        # Always include stable fields.
+                        row_dict.update({"ref_number": order_id, "symbol": symbol, "qty": qty})
+                        # Explicitly map side for the bot
+                        side_key = next((k for k in row_dict.keys() if 'side' in k.lower()), "side")
+                        row_dict['side'] = row_dict.get(side_key, "")
+                        
+                        out.append(row_dict)
+                    return pd.DataFrame(out)
                 except Exception:
-                    qty = 0.0
-
-                # Always include stable fields.
-                row_dict.update({"ref_number": order_id, "symbol": symbol, "qty": qty})
-                out.append(row_dict)
-
-            return pd.DataFrame(out)
+                    time.sleep(1)
+                    table = self.driver.find_element(By.ID, "aoTable-1")
+            
+            return pd.DataFrame()
         except Exception as e:
             print(f"Error reading active orders: {e}")
             return None
@@ -1403,4 +1411,36 @@ class TradeZero:
             
         except Exception as e:
             print(f"Error scraping equity: {e}")
+        return 0.0
+
+    def get_buying_power(self) -> float:
+        """Get Day Buying Power from 'h-bp-value' or similar."""
+        try:
+            for _ in range(5):
+                # 1. Try Specific ID found in Dashboard (h-bp-value)
+                try:
+                    # Note: Day BP is usually h-bp-value in TZ Web
+                    el = self.driver.find_element(By.ID, "h-bp-value")
+                    text = el.text.replace("$", "").replace(",", "").strip()
+                    if text and text != "0.00":
+                        return float(text)
+                except: pass
+                
+                # 2. Text Search Fallback
+                targets = ["Day Buying Power", "Buying Power"]
+                for t in targets:
+                    try:
+                        labels = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{t}')]")
+                        for l in labels:
+                            try:
+                                sib = l.find_element(By.XPATH, "following-sibling::*")
+                                val = sib.text.replace("$", "").replace(",", "").strip()
+                                if val and val[0].isdigit() and val != "0.00":
+                                    return float(val)
+                            except: pass
+                    except: continue
+                
+                time.sleep(1.0)
+        except Exception as e:
+            print(f"Error scraping BP: {e}")
         return 0.0
