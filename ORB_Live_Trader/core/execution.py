@@ -47,6 +47,14 @@ class Broker(ABC):
         pass
     
     @abstractmethod
+    def get_account_summary(self) -> Dict[str, float]:
+        """Returns official broker figures: 
+        {'day_realized': float, 'day_unrealized': float, 'day_total': float, 
+         'account_value': float, 'est_comm_fees': float, ...}
+        """
+        pass
+    
+    @abstractmethod
     def login(self):
         pass
     

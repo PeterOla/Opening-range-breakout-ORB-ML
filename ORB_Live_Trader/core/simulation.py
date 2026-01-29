@@ -221,6 +221,21 @@ class SimBroker(Broker):
             pos['last_price'] = quote['last']
         return self.positions
 
+    def get_account_summary(self) -> Dict[str, float]:
+        """Returns mock account summary for simulation."""
+        # In sim, we track realized PNL from completed_trades
+        realized = sum(t['pnl'] for t in self.completed_trades)
+        return {
+            'total_unrealized': 0.0,
+            'day_realized': realized,
+            'day_unrealized': 0.0,
+            'day_total': realized,
+            'buying_power': self.buying_power,
+            'equity_exposure': 0.0,
+            'account_value': self.equity + realized,
+            'est_comm_fees': self.total_fees
+        }
+
     def login(self):
         pass
         

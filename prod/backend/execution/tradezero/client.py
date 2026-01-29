@@ -1192,7 +1192,7 @@ class TradeZero:
                     By.CSS_SELECTOR,
                     "#portfolio-content-tab-ao-1 table.table-1 thead tr th",
                 )
-                headers = [((h.text or "").strip() or f"col_{i}") for i, h in enumerate(header_cells)]
+                headers = [((h.get_attribute("textContent") or "").strip() or f"col_{i}") for i, h in enumerate(header_cells)]
             except Exception:
                 headers = []
 
@@ -1205,15 +1205,15 @@ class TradeZero:
                         tds = r.find_elements(By.CSS_SELECTOR, "td")
                         if not tds or len(tds) == 1: continue
 
-                        cell_texts = [((td.text or "").strip()) for td in tds]
+                        cell_texts = [((td.get_attribute("textContent") or "").strip()) for td in tds]
 
                         row_dict = {}
                         if headers and len(headers) == len(cell_texts):
                             row_dict = {headers[i]: cell_texts[i] for i in range(len(headers))}
                         
-                        symbol = (tds[2].text or "").strip().upper() if len(tds) >= 3 else ""
+                        symbol = (tds[2].get_attribute("textContent") or "").strip().upper() if len(tds) >= 3 else ""
                         
-                        qty_txt = (tds[4].text or "").replace(",", "").strip() if len(tds) >= 5 else "0"
+                        qty_txt = (tds[4].get_attribute("textContent") or "").replace(",", "").strip() if len(tds) >= 5 else "0"
                         try:
                             qty = float(qty_txt)
                         except:
@@ -1444,3 +1444,34 @@ class TradeZero:
         except Exception as e:
             print(f"Error scraping BP: {e}")
         return 0.0
+
+    def get_account_summary(self) -> dict:
+        """Scrape the account summary from the TradeZero header.
+        
+        Returns a dictionary with official figures:
+        - total_unrealized, day_realized, day_unrealized, day_total
+        - buying_power, equity_exposure, account_value, est_comm_fees
+        """
+        summary = {}
+        selectors = {
+            'total_unrealized': 'h-total-unrealized-value',
+            'day_realized': 'h-realized-value',
+            'day_unrealized': 'h-unrealizd-pl-value',  # Typo is intentional, matches HTML
+            'day_total': 'h-total-pl-value',
+            'buying_power': 'p-bp',
+            'equity_exposure': 'h-exposure-value',
+            'account_value': 'h-equity-value',
+            'est_comm_fees': 'h-com-fees',
+        }
+        for key, sel_id in selectors.items():
+            try:
+                el = self.driver.find_element(By.ID, sel_id)
+                text = el.text.replace('$', '').replace(',', '').strip()
+                # Handle negative values and ensure it's a valid number
+                if text and (text.lstrip('-').replace('.', '', 1).isdigit() or text == '0.00'):
+                    summary[key] = float(text)
+                else:
+                    summary[key] = 0.0
+            except Exception:
+                summary[key] = 0.0
+        return summary

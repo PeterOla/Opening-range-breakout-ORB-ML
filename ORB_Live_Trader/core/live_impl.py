@@ -159,9 +159,20 @@ class TradeZeroBroker(Broker):
             'buying_power': self.client.get_buying_power()
         }
     
+    def get_account_summary(self) -> Dict[str, float]:
+        """Returns official TradeZero figures scraped from the header."""
+        if self.dry_run:
+            return {
+                'total_unrealized': 0.0, 'day_realized': 0.0, 'day_unrealized': 0.0,
+                'day_total': 0.0, 'buying_power': 0.0, 'equity_exposure': 0.0,
+                'account_value': 0.0, 'est_comm_fees': 0.0
+            }
+        return self.client.get_account_summary()
+    
     def login(self):
         # Assumed client handles this
         pass
         
     def logout(self):
         self.client.logout()
+

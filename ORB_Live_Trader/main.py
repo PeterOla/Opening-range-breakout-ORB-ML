@@ -375,6 +375,10 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
                 bars = bars_map.get(symbol)
                 if bars is None: continue
                 
+                # MEMORY: Skip if we already acted on this symbol today
+                if symbol in triggered_symbols:
+                    continue
+                
                 or_data = extract_or(bars)
                 if not or_data: continue
 
@@ -433,7 +437,16 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
                     order_id = match.get('ref_number', f"REC_{row['symbol']}")
                     log(f"RECOVERY: Using existing order for {row['symbol']} (Ref: {order_id})", clock=clock)
                 else:
-                    order_id = safe_place_buy_stop(broker, row['symbol'], shares, row['or_high'], clock)
+                    # IMMEDIATE BREAKOUT CHECK: Fetch current Ask to avoid R118 (Stop < Market)
+                    quote = broker.get_quote(row['symbol'])
+                    curr_ask = float(quote.get('ask', 0))
+                    
+                    if curr_ask >= row['or_high'] and curr_ask > 0:
+                        log(f"IMMEDIATE BREAKOUT DETECTED: {row['symbol']} Ask ({curr_ask}) >= Trigger ({row['or_high']}). Using MARKET BUY.", level="WARNING", clock=clock)
+                        # We use safe_place_market_order which handles R78 rejections too
+                        order_id = safe_place_market_order(broker, row['symbol'], 'BUY', shares, clock)
+                    else:
+                        order_id = safe_place_buy_stop(broker, row['symbol'], shares, row['or_high'], clock)
                 
                 if order_id:
                     active_orders.append({
@@ -498,16 +511,18 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
                         
                         start_idx = pos.get('repair_idx', 0)
                         quote = broker.get_quote(pos['symbol'])
-                        last_price = quote['last'] or pos['stop_price']
+                        # Use BID for Sell Stop validation (more conservative/accurate than Last)
+                        reference_price = float(quote.get('bid', 0)) or float(quote.get('last', 0)) or pos['stop_price']
                         
                         for i in range(start_idx, len(multipliers)):
                             mult = multipliers[i]
                             if pos.get('or_high', 0) > 0 and pos.get('atr_14', 0) > 0:
                                 new_stop = pos['or_high'] - (mult * pos['atr_14'])
                                 
-                                # PRICE SANITY CHECK: Only place stop if it's below current price
-                                if last_price <= new_stop + 0.01:
-                                    log(f"REPAIR SKIP: Multiplier {mult}x ({new_stop:.4f}) is at/above current price ({last_price}). Trying wider...", clock=clock)
+                                # PRICE SANITY CHECK: Only place stop if it's below current BID
+                                # R118 Error triggers if Stop >= Bid
+                                if reference_price <= new_stop + 0.01:
+                                    log(f"REPAIR SKIP: Multiplier {mult}x ({new_stop:.4f}) is at/above current Bid ({reference_price}). Trying wider...", clock=clock)
                                     pos['repair_idx'] = i + 1
                                     continue
     
@@ -521,6 +536,7 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
                                     break
                                 else:
                                     # Immediate failure (UI error)? Increment index to try wider next time
+                                    log(f"REPAIR FAIL: Placement failed for {new_stop:.4f}. Trying wider...", level="WARNING", clock=clock)
                                     pos['repair_idx'] = i + 1
                             else:
                                 break 
@@ -548,7 +564,9 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
         # 5. Heartbeat (Every 5 minutes)
         if (now - market_open).total_seconds() - last_heartbeat_time >= 300:
             last_heartbeat_time = (now - market_open).total_seconds()
-            log(f"HEARTBEAT: {len(active_orders)} Pending Orders | {len(open_positions)} Open Positions | Realized PNL: ${realized_pnl:,.2f}", clock=clock)
+            # Fetch official figures from TradeZero
+            acct = broker.get_account_summary()
+            log(f"HEARTBEAT: {len(active_orders)} Pending | {len(open_positions)} Open | TZ Day Realized: ${acct.get('day_realized', 0):,.2f} | TZ Day Total: ${acct.get('day_total', 0):,.2f} | TZ Fees: ${acct.get('est_comm_fees', 0):,.2f}", clock=clock)
 
         # 6. Rejection Polling (Every 60s)
         if (now - market_open).total_seconds() - last_notif_time >= 60:
@@ -630,6 +648,16 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
             order_id = safe_place_market_order(broker, symbol, 'SELL', shares, clock)
             if order_id:
                 log(f"FLATTEN ORDER SUBMITTED: {symbol} SELL {shares}", clock=clock)
+            
+            # Poll and log the most recent notification after each flatten attempt
+            # to capture any rejection reasons immediately
+            clock.sleep(2)  # Brief wait for rejection response
+            notifs = broker.get_notifications()
+            if notifs:
+                latest = notifs[-1] if isinstance(notifs, list) else notifs.iloc[-1].to_dict() if hasattr(notifs, 'iloc') else {}
+                if latest:
+                    msg = latest.get('message', '')
+                    log(f"LATEST BROKER NOTIFICATION: {latest.get('title', '')} - {msg}", level="WARNING", clock=clock)
         
         attempt += 1
         clock.sleep(10)
