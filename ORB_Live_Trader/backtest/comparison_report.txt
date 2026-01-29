@@ -1,0 +1,47 @@
+================================================================================
+BACKTEST vs LIVE COMPARISON REPORT
+================================================================================
+
+2026-01-26:
+  Backtest Top 5: ['DCOM', 'LE', 'STC', 'VWAV']
+  Live Watchlist: ['LE', 'LRHC', 'VWAV', 'STC', 'DCOM']
+  [MATCH]: ['DCOM', 'LE', 'STC', 'VWAV']
+  [LIVE ONLY]: ['LRHC']
+
+2026-01-27:
+  Backtest Top 5: ['AVAV', 'BNAI', 'GABC', 'LPTH', 'MPWR']
+  Live Watchlist: ['GABC', 'MPWR', 'BNAI']
+  [MATCH]: ['BNAI', 'GABC', 'MPWR']
+  [BACKTEST ONLY]: ['AVAV', 'LPTH']
+
+2026-01-28:
+  Backtest Top 5: ['AVAV', 'LE', 'LPTH', 'MPWR', 'NBHC']
+  Live Watchlist: ['LPTH', 'NBHC', 'AVAV', 'BNAI', 'SLE']
+  [MATCH]: ['AVAV', 'LPTH', 'NBHC']
+  [LIVE ONLY]: ['BNAI', 'SLE']
+  [BACKTEST ONLY]: ['LE', 'MPWR']
+
+================================================================================
+SUMMARY:
+  Total matching symbols: 10
+  Symbols only in live: 3
+  Symbols only in backtest: 4
+
+================================================================================
+BACKTEST TRADES:
+Columns: ['trade_date', 'ticker', 'side', 'rvol', 'pnl_pct', 'shares', 'entry_price', 'exit_price', 'dollar_pnl', 'base_dollar_pnl', 'commission', 'exit_reason']
+
+  2026-01-26 | LE | LONG | Entry: $17.97 | Exit: $19.18 | Gross: $0.00
+  2026-01-26 | STC | LONG | Entry: $69.45 | Exit: $69.11 | Gross: $0.00
+  2026-01-26 | DCOM | LONG | Entry: $33.50 | Exit: $33.31 | Gross: $0.00
+  2026-01-26 | VWAV | LONG | Entry: $10.28 | Exit: $10.09 | Gross: $0.00
+  2026-01-27 | LPTH | LONG | Entry: $10.21 | Exit: $10.04 | Gross: $0.00
+  2026-01-27 | MPWR | LONG | Entry: $1103.10 | Exit: $1097.29 | Gross: $0.00
+  2026-01-27 | GABC | LONG | Entry: $41.53 | Exit: $42.02 | Gross: $0.00
+  2026-01-27 | AVAV | LONG | Entry: $309.31 | Exit: $306.36 | Gross: $0.00
+  2026-01-27 | BNAI | LONG | Entry: $41.63 | Exit: $40.82 | Gross: $0.00
+  2026-01-28 | LPTH | LONG | Entry: $12.11 | Exit: $11.93 | Gross: $0.00
+  2026-01-28 | MPWR | LONG | Entry: $1146.91 | Exit: $1140.64 | Gross: $0.00
+  2026-01-28 | NBHC | LONG | Entry: $39.34 | Exit: $39.16 | Gross: $0.00
+  2026-01-28 | AVAV | LONG | Entry: $nan | Exit: $nan | Gross: $0.00
+  2026-01-28 | LE | LONG | Entry: $nan | Exit: $nan | Gross: $0.00

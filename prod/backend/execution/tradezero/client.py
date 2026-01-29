@@ -1094,6 +1094,54 @@ class TradeZero:
             print(f"Error placing market order: {e}")
             return False
 
+    def market_on_close_order(self, direction: Order, symbol: str, quantity: int) -> bool:
+        """Place a Market-On-Close (MOC) order.
+        
+        MOC orders execute at the closing auction price.
+        This is the preferred method for EOD position flattening as it:
+        - Guarantees execution at market close
+        - Avoids the need for relentless polling/retries
+        - Uses official closing price
+        
+        Note: MOC orders must be submitted before a cutoff time (usually 3:45-3:50 PM ET).
+        """
+        try:
+            if not self.load_symbol(symbol):
+                print(f"Aborting MOC order: failed to load symbol {symbol}")
+                return False
+            
+            # Select Market-On-Close Order Type by value
+            order_type_select = Select(self.driver.find_element(By.ID, "trading-order-select-type"))
+            order_type_select.select_by_value("MarketOnClose")
+            
+            # Allow UI to update after changing order type
+            time.sleep(0.25)
+            
+            # Quantity
+            qty_input = self.driver.find_element(By.ID, "trading-order-input-quantity")
+            # Use JS to set value robustly
+            self.driver.execute_script(
+                "arguments[0].value = '';"
+                "arguments[0].value = arguments[1];"
+                "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
+                "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
+                qty_input,
+                str(quantity)
+            )
+            
+            # Click the appropriate button (BUY/SELL)
+            btn_id = f"trading-order-button-{direction.value}"
+            self._safe_click(By.ID, btn_id, retries=1)
+            
+            self._handle_order_confirmation_modal()
+            
+            print(f"Placed MOC (Market-On-Close) {direction.value.upper()} {quantity} {symbol}")
+            return True
+        except Exception as e:
+            print(f"Error placing MOC order: {e}")
+            self._dump_ui_snapshot(f"moc_order_error_{symbol}")
+            return False
+
     def get_portfolio(self):
         """Get current portfolio as DataFrame."""
         try:

@@ -617,58 +617,66 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
         except Exception as e:
             pass # Silent failure for persistence to avoid loop crashes
 
-    # EOD Cleanup: Relentless flattening until 16:00 ET
-    log("EOD Reached (15:55 ET) - Entering RELENTLESS FLATTEN mode until 16:00 ET...", clock=clock)
+    # EOD Cleanup: Use Market-On-Close (MOC) orders for reliable flattening
+    log("EOD Reached (15:55 ET) - Submitting Market-On-Close orders for all positions...", clock=clock)
     
     market_bell = et_tz.localize(datetime.combine(current_date, dt_time(16, 0)))
     
-    attempt = 1
-    while clock.now() < market_bell:
-        final_positions = broker.get_positions()
-        if not final_positions:
-            log("All positions successfully flattened.", clock=clock)
-            break
-            
-        log(f"Flatten Attempt {attempt}: Liquidating {len(final_positions)} positions...", clock=clock)
-        for pos in final_positions:
+    # Submit MOC orders for all open positions
+    eod_positions = broker.get_positions()
+    moc_submitted = set()
+    
+    if eod_positions:
+        log(f"Found {len(eod_positions)} positions to flatten via MOC orders.", clock=clock)
+        for pos in eod_positions:
             symbol = pos['symbol']
             shares = int(pos.get('qty', 0))
-            if shares <= 0: continue
+            if shares <= 0: 
+                continue
             
             # Record EOD PNL before we close it
             if symbol in fills_tracker:
                 entry = fills_tracker[symbol]
-                # Try to get last price for EOD PNL estimation
                 last_price = float(pos.get('last_price', 0)) or entry['entry_price']
                 pnl = (last_price - entry['entry_price']) * shares
                 realized_pnl += pnl
                 log(f"EOD EXIT: {symbol} @ ~{last_price}. Trade PNL: ${pnl:,.2f}", clock=clock)
-                del fills_tracker[symbol] 
+                del fills_tracker[symbol]
             
-            order_id = safe_place_market_order(broker, symbol, 'SELL', shares, clock)
+            # Submit MOC Order
+            order_id = broker.place_order(symbol, 'SELL', 'MOC', shares)
             if order_id:
-                log(f"FLATTEN ORDER SUBMITTED: {symbol} SELL {shares}", clock=clock)
+                log(f"MOC ORDER SUBMITTED: {symbol} SELL {shares} shares", clock=clock)
+                moc_submitted.add(symbol)
+            else:
+                log(f"WARNING: Failed to submit MOC order for {symbol}", level="WARNING", clock=clock)
             
-            # Poll and log the most recent notification after each flatten attempt
-            # to capture any rejection reasons immediately
-            clock.sleep(2)  # Brief wait for rejection response
-            notifs = broker.get_notifications()
-            if notifs:
-                latest = notifs[-1] if isinstance(notifs, list) else notifs.iloc[-1].to_dict() if hasattr(notifs, 'iloc') else {}
-                if latest:
-                    msg = latest.get('message', '')
-                    log(f"LATEST BROKER NOTIFICATION: {latest.get('title', '')} - {msg}", level="WARNING", clock=clock)
+            # Brief pause between orders
+            clock.sleep(1)
         
-        attempt += 1
-        clock.sleep(10)
+        log(f"MOC orders submitted for {len(moc_submitted)} symbols. Waiting for market close...", clock=clock)
+    else:
+        log("No open positions to flatten. Account is already flat.", clock=clock)
     
-    # Final Result
-    log(f"--- SESSION OVER --- Total Realized PNL: ${realized_pnl:,.2f}", clock=clock)
+    # Wait until market close (with periodic heartbeats)
+    while clock.now() < market_bell:
+        remaining_secs = (market_bell - clock.now()).total_seconds()
+        if remaining_secs > 60:
+            log(f"Waiting for market close... {remaining_secs/60:.1f} minutes remaining.", clock=clock)
+            clock.sleep(60)
+        else:
+            clock.sleep(10)
     
-    # Final Final Check at 16:00
+    # Final Result - Use official TradeZero figures
+    acct = broker.get_account_summary()
+    log(f"--- SESSION OVER --- TZ Day Realized: ${acct.get('day_realized', 0):,.2f} | TZ Day Total: ${acct.get('day_total', 0):,.2f}", clock=clock)
+    
+    # Final Check at 16:00
     remaining = broker.get_positions()
     if remaining:
-        log(f"CRITICAL: Failed to flatten {len(remaining)} positions by market close (16:00)!", level="CRITICAL", clock=clock)
+        log(f"CRITICAL: {len(remaining)} positions still open after MOC orders executed!", level="CRITICAL", clock=clock)
+        for pos in remaining:
+            log(f"  - {pos['symbol']}: {pos.get('qty', '?')} shares", level="CRITICAL", clock=clock)
     else:
         log("EOD Flattening Complete: Account is flat.", clock=clock)
 

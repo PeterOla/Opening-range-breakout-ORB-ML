@@ -109,6 +109,13 @@ class TradeZeroBroker(Broker):
                 price=price,
                 tif=TIF.DAY
             )
+        elif otype == 'MOC' or otype == 'MARKET_ON_CLOSE':
+            # Market-On-Close order for EOD flattening
+            success = self.client.market_on_close_order(
+                direction=tz_side,
+                symbol=symbol.upper(),
+                quantity=int(quantity)
+            )
         else: # MARKET
             success = self.client.market_order(
                 direction=tz_side,
