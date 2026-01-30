@@ -225,7 +225,7 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
     current_date = clock.now().date()
     market_open = et_tz.localize(datetime.combine(current_date, dt_time(9, 30)))
     or_cutoff = et_tz.localize(datetime.combine(current_date, dt_time(9, 35)))
-    market_close = et_tz.localize(datetime.combine(current_date, dt_time(15, 55)))
+    market_close = et_tz.localize(datetime.combine(current_date, dt_time(15, 45)))
     
     state_file = ORB_ROOT / "state" / f"session_{current_date}.json"
     
@@ -618,7 +618,7 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
             pass # Silent failure for persistence to avoid loop crashes
 
     # EOD Cleanup: Use Market-On-Close (MOC) orders for reliable flattening
-    log("EOD Reached (15:55 ET) - Submitting Market-On-Close orders for all positions...", clock=clock)
+    log("EOD Reached (15:45 ET) - Submitting Market-On-Close orders for all positions...", clock=clock)
     
     market_bell = et_tz.localize(datetime.combine(current_date, dt_time(16, 0)))
     
