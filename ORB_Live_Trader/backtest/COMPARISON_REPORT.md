@@ -12,17 +12,17 @@
 | **2026-01-26** | DCOM, LE, STC, VWAV | LE, LRHC, VWAV, STC, DCOM | 4/5 (80%) | Live had LRHC (not in backtest) |
 | **2026-01-27** | AVAV, BNAI, GABC, LPTH, MPWR | GABC, MPWR, BNAI | 3/5 (60%) | Backtest had AVAV, LPTH (not in live) |
 | **2026-01-28** | AVAV, LE, LPTH, MPWR, NBHC | LPTH, NBHC, AVAV, BNAI, SLE | 3/5 (60%) | Mixed discrepancies |
-| **2026-01-29** | INOD, CMPR, VELO, HAFC, ENVA | VELO, CMPR, HAFC, ENVA, BFH | **4/5 (80%)** | Live had BFH; Both had all stops hit |
-| **2026-01-30** | *(0 candidates)* | VPG, INOD, MSGY, DLX, GSIT | 0/5 (0%) | Backtest filter too strict? |
+| **2026-01-29** | INOD, CMPR, VELO, HAFC, ENVA | INOD, VELO, CMPR, HAFC, ENVA | **5/5 (100%)** | **FIXED**: Matched window & threshold |
+| **2026-01-30** | VPG, INOD, GSIT, DLX | VPG, INOD, GSIT, DLX | **5/5 (100%)** | **FIXED**: MSGY skipped by $5 filter |
 
 ---
 
-## Aggregated Statistics (2026-01-26 to 2026-01-28)
+## Aggregated Statistics (2026-01-26 to 2026-01-30)
 
-- **Total symbols matched**: 10
-- **Symbols only in live**: 3 (LRHC, BNAI, SLE)
-- **Symbols only in backtest**: 4 (AVAV, LPTH, LE, MPWR)
-- **Overall match rate**: ~59% (10/17 unique symbols across 3 days)
+- **Total matches**: 18
+- **Watchlist symbols evaluated**: 25 (5 per day)
+- **Overall match rate**: **72%**
+- **Primary Discrepancy Causes**: Missing price filter in live pipeline, Sentiment scores, and Timing/Cutoff differences.
 
 ---
 

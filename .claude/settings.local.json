@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)\" -maxdepth 3 -type f -name \"README*\" -o -name \"CLAUDE.md\" -o -name \"*.md\")",
+      "Bash(ls -la \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/\")",
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)\" -maxdepth 3 -type d)",
+      "Bash(ls -la \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/ORB_Live_Trader/\")",
+      "Bash(ls -la \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/prod/\")",
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)\" -maxdepth 2 -type f -name \"*.py\")",
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/ORB_Live_Trader\" -type f -name \"*.py\")",
+      "Bash(ls -la \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/strategies/\")",
+      "Bash(ls -la \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/data/\")",
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/prod/backend\" -type f -name \"*.py\")",
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/prod/backend\" -maxdepth 3 -type f -name \"*.py\" -not -path \"*/.venv/*\")",
+      "Bash(ls \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)/prod/*.md\")",
+      "Bash(find \"C:\\\\Users\\\\Olale\\\\Documents\\\\Codebase\\\\Quant\\\\Opening Range Breakout \\(ORB\\)\" -type f -name \"*.py\" -path \"*/core/*\" -o -path \"*/pipeline/*\")"
+    ]
+  }
+}

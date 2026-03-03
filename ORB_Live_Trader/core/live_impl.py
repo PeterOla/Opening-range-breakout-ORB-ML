@@ -146,7 +146,6 @@ class TradeZeroBroker(Broker):
             return [o for o in self._mock_orders if o['status'] == 'SUBMITTED']
         
         orders_df = self.client.get_active_orders()
-        if orders_df is None: return None
         if isinstance(orders_df, pd.DataFrame) and not orders_df.empty:
             return orders_df.to_dict('records')
         return []

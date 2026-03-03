@@ -136,19 +136,20 @@ def fetch_fresh_news(symbols: List[str], target_date: datetime.date) -> Optional
     
     et_tz = pytz.timezone("America/New_York")
     
-    # Determine window
-    # Simple logic: Previous Day = Target - 1 (Need BDay logic for Mondays, but simple -1 works for most checks or we assume input is correct)
-    # For strict Rolling 24H:
+    # Determine window (matches process_news_dates.py logic)
+    # Start: 09:30 ET on Previous Business Day (Rolling 24H)
+    # End:   09:30 ET on Target Date
     target_dt = datetime.combine(target_date, dt_time(9, 30))
     target_0930 = et_tz.localize(target_dt)
     
-    # 24 hours prior (approx business day)
-    prev_0930 = target_0930 - timedelta(days=1)
-    if target_date.weekday() == 0: # If Monday, look back to Friday? 
-        # Strategy says "Rolling 24H". 
-        # Actually backtest used simple 24h clock usually, but let's stick to 24-48h to be safe.
-        # Fetching 72h for Monday ensures we catch Friday news.
-        prev_0930 = target_0930 - timedelta(days=3)
+    # Use pandas offsets to find previous business day for strict matching
+    prev_0930 = (pd.to_datetime(target_0930) - pd.tseries.offsets.BDay(1)).to_pydatetime()
+    
+    # Localize to ET if offset lost it (offsets often return UTC-naive or inconsistent)
+    if prev_0930.tzinfo is None:
+        prev_0930 = et_tz.localize(prev_0930)
+    else:
+        prev_0930 = prev_0930.astimezone(et_tz)
         
     start_utc = prev_0930.astimezone(pytz.UTC)
     end_utc = target_0930.astimezone(pytz.UTC)
@@ -412,7 +413,8 @@ def fetch_technical_metrics(symbols: List[str], target_date: datetime.date) -> p
             results.append({
                 'symbol': symbol,
                 'atr_14': float(atr_14) if not pd.isna(atr_14) else 0.0,
-                'avg_volume_14': float(avg_vol_14) if not pd.isna(avg_vol_14) else 0.0
+                'avg_volume_14': float(avg_vol_14) if not pd.isna(avg_vol_14) else 0.0,
+                'last_price': float(group['close'].iloc[-1])
             })
             
         return pd.DataFrame(results)

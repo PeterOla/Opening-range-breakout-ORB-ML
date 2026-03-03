@@ -142,11 +142,14 @@ class TradeZero:
             time.sleep(0.5)
         return False
 
-    def _wait_for_any(self, candidates: list[tuple[str, str]], timeout_s: float = 20.0):
+    def _wait_for_any(self, candidates: list[tuple[str, str]], timeout_s: float = 20.0) -> WebElement:
         """Return the first element found from a list of (by, value) locators."""
-        last_exc: Optional[Exception] = None
-        end = time.time() + timeout_s
-        while time.time() < end:
+        if not candidates:
+            return None
+            
+        start = time.time()
+        last_exc = None
+        while time.time() - start < timeout_s:
             for by, value in candidates:
                 try:
                     el = self.driver.find_element(by, value)

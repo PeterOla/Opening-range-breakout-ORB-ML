@@ -264,8 +264,8 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
     if not isinstance(broker, SimBroker):
         # Always cross-check with broker reality
         log("DURING START: Cross-checking state with broker reality...", clock=clock)
-        current_portfolio = broker.get_positions()
-        active_broker_orders = broker.get_active_orders()
+        current_portfolio = broker.get_positions() or []
+        active_broker_orders = broker.get_active_orders() or []
         
         # 1. Ensure all broker positions are in our tracker
         for p in current_portfolio:
@@ -381,6 +381,11 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
                 
                 or_data = extract_or(bars)
                 if not or_data: continue
+
+                # PRICE FILTER ($5 Min Open - matches build_universe.py)
+                if or_data['or_open'] < 5.0:
+                    log(f"Skipping {symbol}: OR Open ${or_data['or_open']} is below $5 minimum.", clock=clock)
+                    continue
 
                 # ONLY LONG: OR Close > OR Open
                 direction = 1 if or_data['or_close'] > or_data['or_open'] else -1
@@ -542,9 +547,24 @@ def run_trading_session(clock: Clock, broker: Broker, pool_df: pd.DataFrame, con
                                 break 
     
                         if not repair_success:
+                            # CIRCUIT BREAKER: If we are already exiting this symbol, don't spam.
+                            if pos.get('is_exiting'):
+                                continue
+                                
                             log(f"CRITICAL: All stop repairs failed for {pos['symbol']} or price already below 0.15 ATR. MARKET EXITING.", level="CRITICAL", clock=clock)
-                            safe_place_market_order(broker, pos['symbol'], 'SELL', pos['shares'], clock)
-                            # We don't remove from open_positions here; the EOD auditor will catch the 0 qty
+                            pos['is_exiting'] = True
+                            success = safe_place_market_order(broker, pos['symbol'], 'SELL', pos['shares'], clock)
+                            
+                            if not success:
+                                log(f"RECOVERY FAILURE: Market exit for {pos['symbol']} failed (Broker Rejected). Manual intervention required.", level="ERROR", clock=clock)
+                                # Remove from tracking to stop the loop, even if it failed. User must handle manually now.
+                                if pos['symbol'] in fills_tracker:
+                                    del fills_tracker[pos['symbol']]
+                                open_positions.remove(pos)
+                            else:
+                                # Even if successful, we wait for auditor to confirm exit.
+                                # But we stop the repair loop immediately.
+                                pass
 
         for pos in list(open_positions):
             broker_pos = next((p for p in current_positions if p['symbol'] == pos['symbol']), None)
@@ -716,6 +736,10 @@ def generate_initial_pool(candidates_df: pd.DataFrame, target_date: datetime.dat
             continue
             
         # Technical Filters
+        # Price Filter (Primary Source of Truth: $5 Min)
+        price = row.get('last_price', 0) if row.get('last_price', 0) > 0 else 0
+        if price > 0 and price < 5.0: continue
+
         if atr < 0.50: continue
         if avg_vol < 100000: continue
         
@@ -736,9 +760,10 @@ def generate_initial_pool(candidates_df: pd.DataFrame, target_date: datetime.dat
     if df_pool.empty:
         return df_pool
         
-    # Rank by Sentiment to get Top 15 watchlist
+    # Rank by Sentiment to get potential candidates
+    # We take Top 50 to ensure we don't miss high-RVOL gems that might have slightly lower sentiment
     df_pool = df_pool.sort_values('positive_score', ascending=False)
-    df_pool = df_pool.drop_duplicates(subset=['symbol']).head(15)
+    df_pool = df_pool.drop_duplicates(subset=['symbol']).head(50)
     return df_pool
 
 # -----------------------------------------------------------------------------
