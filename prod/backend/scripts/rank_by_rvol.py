@@ -4,7 +4,7 @@ import sys
 
 # Paths
 base_dir = Path(r"c:\Users\Olale\Documents\Codebase\Quant\Opening Range Breakout (ORB)")
-processed_dir = base_dir / "data" / "processed" / "daily"
+processed_dir = Path(r"C:\Users\Olale\Documents\Financial Data") / "processed" / "daily"
 
 # Symbols with sentiment > 0.90
 high_sentiment_symbols = [

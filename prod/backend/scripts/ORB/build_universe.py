@@ -5,11 +5,11 @@ Scans all symbols once per day, filters by criteria, and saves the Top 50 ranked
 Output: data/backtest/universe.parquet
 
 DATA FORMAT REQUIREMENTS:
-  Daily data (data/processed/daily/*.parquet):
+    Daily data (C:\Users\Olale\Documents\Financial Data\processed\daily\*.parquet):
     - date column: datetime64[ns, UTC] — midnight UTC for each trading day
     - atr_14, avg_volume_14 must be pre-computed
     
-  5-Min data (data/processed/5min/*.parquet):
+    5-Min data (C:\Users\Olale\Documents\Financial Data\processed\5min\*.parquet):
     - datetime column: datetime64[ns, America/New_York] — ET timestamps
     - Contains pre-market (04:00 ET) through after-hours (19:55 ET) bars
 
@@ -33,10 +33,11 @@ import multiprocessing
 import gc
 
 # Data dirs
-DATA_DIR = Path(__file__).resolve().parents[4] / "data"
-DATA_DIR_5MIN = DATA_DIR / "processed" / "5min"
-DATA_DIR_DAILY = DATA_DIR / "processed" / "daily"
-OUT_DIR = DATA_DIR / "backtest" / "orb" / "universe"
+REPO_DATA_DIR = Path(__file__).resolve().parents[4] / "data"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+DATA_DIR_5MIN = SHARED_DATA_ROOT / "processed" / "5min"
+DATA_DIR_DAILY = SHARED_DATA_ROOT / "processed" / "daily"
+OUT_DIR = REPO_DATA_DIR / "backtest" / "orb" / "universe"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 OR_START = time(9, 30)

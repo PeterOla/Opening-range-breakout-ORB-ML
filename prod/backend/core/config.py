@@ -8,26 +8,8 @@ from typing import List
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _pick_data_root() -> Path:
-    """Pick a data root that actually contains daily parquet bars.
-
-    This avoids brittle behaviour where relative paths change depending on
-    where you start uvicorn/scripts from.
-    """
-
-    backend_data = _BACKEND_ROOT / "data"
-    repo_data = _REPO_ROOT / "data"
-
-    if (backend_data / "processed" / "daily").exists():
-        return backend_data
-    if (repo_data / "processed" / "daily").exists():
-        return repo_data
-    return backend_data
-
-
-_DATA_ROOT = _pick_data_root()
+_REPO_DATA_ROOT = _REPO_ROOT / "data"
+_SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
 
 
 class Settings(BaseSettings):
@@ -57,8 +39,8 @@ class Settings(BaseSettings):
     DUCKDB_PATH: str = str(_BACKEND_ROOT / "data" / "duckdb_local.db")
     # DuckDB file used for *trading state* (signals/opening ranges). Keep separate from market-data DuckDB.
     DUCKDB_STATE_PATH: str = str(_BACKEND_ROOT / "data" / "trading_state.duckdb")
-    PARQUET_BASE_PATH: str = str(_DATA_ROOT / "processed")
-    DELTA_BASE_PATH: str = str(_DATA_ROOT / "deltas")
+    PARQUET_BASE_PATH: str = str(_SHARED_DATA_ROOT / "processed")
+    DELTA_BASE_PATH: str = str(_REPO_DATA_ROOT / "deltas")
 
     # State store backend
     # Options: duckdb, sqlalchemy

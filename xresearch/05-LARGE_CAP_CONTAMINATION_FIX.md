@@ -109,7 +109,7 @@ python scripts/data/generate_micro_universe_all.py
 
 ### Step 2: Fetch News (Clean)
 **Script**: `prod/backend/scripts/research/fetch_full_universe_news.py`  
-**Output**: `data/research/news/news_micro_full_1y.parquet`  
+**Output**: `C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y.parquet`  
 **Period**: 2021-01-01 to 2021-12-31 (Full Year)  
 **Logic**: 
 - Fetches news for all 2,744 symbols
@@ -132,7 +132,7 @@ Processing batches: 100% | 69/69 [04:54<00:00]
 ```powershell
 @"
 import pandas as pd
-news = pd.read_parquet('data/research/news/news_micro_full_1y.parquet')
+news = pd.read_parquet('C:\\Users\\Olale\\Documents\\Financial Data\\news\\news_micro_full_1y.parquet')
 print(f'Total news: {len(news):,}')
 print(f'Unique symbols: {news["symbol"].nunique():,}')
 
@@ -154,7 +154,7 @@ Large caps: NONE ✓
 
 ### Step 3: Sentiment Scoring
 **Script**: `prod/backend/scripts/research/score_full_universe_news.py`  
-**Output**: `data/research/news/news_micro_full_1y_scored.parquet`  
+**Output**: `C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y_scored.parquet`  
 **Model**: `ProsusAI/finbert` (Hugging Face FinBERT)  
 **Logic**:
 - Scores `headline` only (summaries too noisy)
@@ -180,7 +180,7 @@ Processing batches: 100% | 1127/1127 [16:23<00:00]
 ```powershell
 @"
 import pandas as pd
-scored = pd.read_parquet('data/research/news/news_micro_full_1y_scored.parquet')
+scored = pd.read_parquet('C:\\Users\\Olale\\Documents\\Financial Data\\news\\news_micro_full_1y_scored.parquet')
 print(f'Scored news: {len(scored):,}')
 print(f'Avg positive score: {scored["positive_score"].mean():.3f}')
 print(f'Score > 0.90: {(scored["positive_score"] > 0.90).sum():,} ({(scored["positive_score"] > 0.90).sum() / len(scored) * 100:.1f}%)')
@@ -499,8 +499,8 @@ Choose 5% for **risk management**, 10% for **profit maximization** (if you can s
    - **Line 18**: Updated `OUTPUT_DIR` to `research_2021_sentiment_CLEAN`
 
 ### Created Files
-1. **`data/research/news/news_micro_full_1y.parquet`** (75,760 rows, CLEAN)
-2. **`data/research/news/news_micro_full_1y_scored.parquet`** (75,760 rows, scored)
+1. **`C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y.parquet`** (75,760 rows, CLEAN)
+2. **`C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y_scored.parquet`** (75,760 rows, scored)
 3. **`data/backtest/orb/universe/research_2021_sentiment_CLEAN/universe_sentiment_0.6.parquet`** (11,020 rows)
 4. **`data/backtest/orb/universe/research_2021_sentiment_CLEAN/universe_sentiment_0.7.parquet`** (9,870 rows)
 5. **`data/backtest/orb/universe/research_2021_sentiment_CLEAN/universe_sentiment_0.8.parquet`** (7,740 rows)
@@ -528,7 +528,7 @@ print(f'Micro-cap symbols: {len(micro["symbol"].unique()):,}')
 # 2. Validate raw news (no large caps)
 @"
 import pandas as pd
-news = pd.read_parquet('data/research/news/news_micro_full_1y.parquet')
+news = pd.read_parquet('C:\\Users\\Olale\\Documents\\Financial Data\\news\\news_micro_full_1y.parquet')
 large_caps = ['AAPL', 'AMZN', 'MSFT', 'CAT', 'COST', 'GME', 'BABA', 'INTC', 'TSLA', 'NVDA']
 contaminated = [lc for lc in large_caps if lc in news['symbol'].values]
 print(f'Total news: {len(news):,}')
@@ -541,7 +541,7 @@ print(f'Large caps: {contaminated if contaminated else "NONE ✓"}')
 # 3. Validate scored news
 @"
 import pandas as pd
-scored = pd.read_parquet('data/research/news/news_micro_full_1y_scored.parquet')
+scored = pd.read_parquet('C:\\Users\\Olale\\Documents\\Financial Data\\news\\news_micro_full_1y_scored.parquet')
 print(f'Scored news: {len(scored):,}')
 print(f'Avg positive score: {scored["positive_score"].mean():.3f}')
 print(f'Score > 0.90: {(scored["positive_score"] > 0.90).sum():,} ({(scored["positive_score"] > 0.90).sum() / len(scored) * 100:.1f}%)')

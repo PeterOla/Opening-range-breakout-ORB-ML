@@ -129,14 +129,14 @@ Detailed comparison of the optimal threshold (0.90). Data source: `daily_perform
 
 ### B. News Fetching
 - **Script**: `prod/backend/scripts/research/fetch_full_universe_news.py`
-- **Output**: `data/research/news/news_micro_full_1y.parquet`
+- **Output**: `C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y.parquet`
 - **Logic**: 
   - Scans all 2,744 symbols for news in 2021.
   - Uses "Time-Walking" pagination (iterating backwards) to bypass Alpaca limit of 100 pages.
 
 ### C. Sentiment Scoring
 - **Script**: `prod/backend/scripts/research/score_full_universe_news.py`
-- **Output**: `data/research/news/news_micro_full_1y_scored.parquet`
+- **Output**: `C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y_scored.parquet`
 - **Model**: `ProsusAI/finbert` (Hugging Face)
 - **Logic**:
   - Checks `headline` only (Summaries often noisy).

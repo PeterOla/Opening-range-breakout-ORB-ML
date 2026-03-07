@@ -21,16 +21,13 @@ import json
 PIPELINE_DIR = Path(__file__).parent
 BACKTEST_DIR = PIPELINE_DIR.parent
 DATA_DIR = BACKTEST_DIR / "data"
-INPUT_SCORED_NEWS = DATA_DIR / "news" / "news_micro_full_1y_scored.parquet"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+NEWS_DIR = SHARED_DATA_ROOT / "news"
 
-# Sibling path for main data (assuming original structure available or mapped)
-# We need 5min and daily processed data. 
-# Assuming they reside in PROJECT_ROOT/data/processed (as per original script)
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-MAIN_DATA_DIR = PROJECT_ROOT / "data"
-DATA_DIR_5MIN = MAIN_DATA_DIR / "processed" / "5min"
-DATA_DIR_DAILY = MAIN_DATA_DIR / "processed" / "daily"
-UNIVERSE_ROOT = DATA_DIR / "universe" # Local output
+# Bar data lives in the shared processed directory (synced by sync_data.py)
+DATA_DIR_5MIN = SHARED_DATA_ROOT / "processed" / "5min"
+DATA_DIR_DAILY = SHARED_DATA_ROOT / "processed" / "daily"
+UNIVERSE_ROOT = DATA_DIR / "universe"  # Local output
 
 THRESHOLDS = [0.60, 0.70, 0.80, 0.90, 0.95]
 
@@ -143,14 +140,20 @@ def generate_base_universe(df_news, threshold, mode='rolling_24h'):
 def main():
     parser = argparse.ArgumentParser(description="Enrich sentiment universe")
     parser.add_argument('--mode', type=str, default='rolling_24h', choices=['rolling_24h', 'premarket'])
+    parser.add_argument('--input', type=str, default='news_micro_full_1y_scored.parquet', help='Input scored news filename in shared news directory (default: news_micro_full_1y_scored.parquet)')
+    parser.add_argument('--output-name', type=str, default=None, help='Output universe subdirectory name (default: research_2021_sentiment_ROLLING24H or _PREMARKET based on mode)')
     args = parser.parse_args()
-    
+
+    INPUT_SCORED_NEWS = NEWS_DIR / args.input
+
     if not INPUT_SCORED_NEWS.exists():
         print(f"Input file not found: {INPUT_SCORED_NEWS}")
         return
 
-    # Folder specific to mode
-    if args.mode == 'rolling_24h':
+    # Determine output directory
+    if args.output_name:
+        OUTPUT_DIR = UNIVERSE_ROOT / args.output_name
+    elif args.mode == 'rolling_24h':
         OUTPUT_DIR = UNIVERSE_ROOT / "research_2021_sentiment_ROLLING24H"
     else:
         OUTPUT_DIR = UNIVERSE_ROOT / "research_2021_sentiment_PREMARKET"

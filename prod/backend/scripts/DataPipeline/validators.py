@@ -252,7 +252,7 @@ if __name__ == "__main__":
     validator = DailySyncValidator()
     
     # Test with sample file
-    test_file = Path("data/processed/daily/A.parquet")
+    test_file = Path(r"C:\Users\Olale\Documents\Financial Data\processed\daily\A.parquet")
     if test_file.exists():
         df = pd.read_parquet(test_file)
         DataValidator.validate_daily_schema(df)

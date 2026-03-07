@@ -30,10 +30,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
 # Data dirs
-DATA_DIR = Path(__file__).resolve().parents[4] / "data"
-DATA_DIR_5MIN = DATA_DIR / "processed" / "5min"
-DATA_DIR_DAILY = DATA_DIR / "processed" / "daily"
-OUT_DIR = DATA_DIR / "backtest" / "universes"
+REPO_DATA_DIR = Path(__file__).resolve().parents[4] / "data"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+DATA_DIR_5MIN = SHARED_DATA_ROOT / "processed" / "5min"
+DATA_DIR_DAILY = SHARED_DATA_ROOT / "processed" / "daily"
+OUT_DIR = REPO_DATA_DIR / "backtest" / "universes"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # RC-specific filters

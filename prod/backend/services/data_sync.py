@@ -5,7 +5,7 @@ Data synchronisation service.
 - Calculate ATR(14) and avg_volume(14) for each symbol
 - Delete bars older than 30 days
 
-Reads from: data/processed/daily/*.parquet
+Reads from: shared processed daily parquet directory
 """
 from datetime import datetime, timedelta
 from typing import Optional
@@ -61,27 +61,16 @@ def get_trading_days(start_date: datetime, end_date: datetime) -> list[datetime]
 
 def get_data_dir() -> Path:
     """
-    Resolve the data directory path.
-    Assumes structure:
-    root/
-      data/
-        processed/
-          daily/
-      prod/
-        backend/
+    Resolve the daily parquet directory using shared processed data path.
     """
-    # Start from current file location
-    current_file = Path(__file__).resolve()
-    # Go up to prod/backend/services -> prod/backend -> prod -> root
-    root_dir = current_file.parent.parent.parent.parent
-    data_dir = root_dir / "data" / "processed" / "daily"
-    
+    base = Path(getattr(settings, "PARQUET_BASE_PATH", r"C:\Users\Olale\Documents\Financial Data\processed"))
+    data_dir = base / "daily"
+
     if not data_dir.exists():
-        # Fallback: try relative to CWD if running from root
-        cwd_data = Path("data/processed/daily")
+        cwd_data = Path(r"C:\Users\Olale\Documents\Financial Data\processed\daily")
         if cwd_data.exists():
             return cwd_data.resolve()
-            
+
     return data_dir
 
 
@@ -461,8 +450,8 @@ def get_universe_with_metrics(
         return Path(__file__).resolve().parents[3]
 
     def _daily_parquet_dir() -> Path:
-        p1 = _repo_root() / "data" / "processed" / "daily"
-        p2 = Path("data/processed/daily")
+        p1 = Path(getattr(settings, "PARQUET_BASE_PATH", r"C:\Users\Olale\Documents\Financial Data\processed")) / "daily"
+        p2 = Path(r"C:\Users\Olale\Documents\Financial Data\processed\daily")
         return p1 if p1.exists() else p2
 
     def _get_universe_with_metrics_from_local_parquet() -> list[dict]:

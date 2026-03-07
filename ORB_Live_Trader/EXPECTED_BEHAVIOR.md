@@ -41,13 +41,13 @@ This document defines the "Contract of Operation" for the automated ORB trading 
 The system follows a strict "Persistence for Transparency" rule. Every piece of data used to make a trade decision is saved to local subfolders for end-of-day audit.
 
 ### 2.1 News & Sentiment (Alpaca)
-- **Raw News**: Saved to `data/news/news_YYYY-MM-DD.parquet`.
+- **Raw News**: Saved to `C:\Users\Olale\Documents\Financial Data\news\news_YYYY-MM-DD.parquet`.
 - **Scored Sentiment**: Saved to `data/sentiment/sentiment_YYYY-MM-DD.parquet`.
 - **Review**: You can open these files to see exactly which headlines FinBERT scored and why a symbol entered the watchlist.
 
 ### 2.2 Price Data (Alpaca & Local)
 - **Live Mode**: Fetches 5-min bars from Alpaca and persists them to `data/bars/` dynamically.
-- **Verification Mode**: References the main `data/processed/` archive, but **caches** the specific bars used for that date into `data/bars/` for immediate review.
+- **Verification Mode**: References the main `C:\Users\Olale\Documents\Financial Data\processed\` archive, but **caches** the specific bars used for that date into `data/bars/` for immediate review.
 
 ### 2.3 Execution Monitoring (TradeZero)
 - **Positions & Quotes**: Scraped every 5s from the Web UI.

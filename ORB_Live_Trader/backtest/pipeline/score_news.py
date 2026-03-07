@@ -3,21 +3,20 @@ Score Full Universe News (Backtest Pipeline)
 ============================================
 Scores the news dataset using FinBERT and generates a Sentiment-Based Universe.
 
-Input: ORB_Live_Trader/backtest/data/news/news_micro_full_1y.parquet
+Input: C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y.parquet
 Output: 
-  1. ORB_Live_Trader/backtest/data/news/news_micro_full_1y_scored.parquet
+    1. C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y_scored.parquet
   2. ORB_Live_Trader/backtest/data/universe/universe_sentiment_only.parquet
 """
 
 import sys
+import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import timedelta
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-# Ensure we can import utils
 PIPELINE_DIR = Path(__file__).parent
 sys.path.insert(0, str(PIPELINE_DIR))
 
@@ -31,13 +30,21 @@ except ImportError as e:
 # Paths
 BACKTEST_DIR = PIPELINE_DIR.parent
 DATA_DIR = BACKTEST_DIR / "data"
-INPUT_FILE = DATA_DIR / "news" / "news_micro_full_1y.parquet"
-OUTPUT_SCORED_FILE = DATA_DIR / "news" / "news_micro_full_1y_scored.parquet"
-OUTPUT_UNIVERSE_FILE = DATA_DIR / "universe" / "universe_sentiment_only.parquet"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+NEWS_DIR = SHARED_DATA_ROOT / "news"
 
 SENTIMENT_THRESHOLD = 0.6
 
 def main():
+    parser = argparse.ArgumentParser(description="Score news with FinBERT for ORB backtest pipeline")
+    parser.add_argument("--input", type=str, default="news_micro_full_1y.parquet", help="Input filename in shared news directory (default: news_micro_full_1y.parquet)")
+    parser.add_argument("--output", type=str, default="news_micro_full_1y_scored.parquet", help="Output filename in shared news directory (default: news_micro_full_1y_scored.parquet)")
+    args = parser.parse_args()
+
+    INPUT_FILE = NEWS_DIR / args.input
+    OUTPUT_SCORED_FILE = NEWS_DIR / args.output
+    OUTPUT_UNIVERSE_FILE = DATA_DIR / "universe" / "universe_sentiment_only.parquet"
+
     if not INPUT_FILE.exists():
         print(f"Error: Input file missing: {INPUT_FILE}")
         return

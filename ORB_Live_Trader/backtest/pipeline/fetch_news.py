@@ -3,10 +3,11 @@ Fetch Full Universe News (Backtest Pipeline)
 ============================================
 Fetches 1 year of news for the entire Micro-Cap Universe (2,744 symbols).
 
-Output: ORB_Live_Trader/backtest/data/news/news_micro_full_1y.parquet
+Output: C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y.parquet
 """
 
 import sys
+import argparse
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -14,16 +15,16 @@ from tqdm import tqdm
 import time
 import os
 
-# Add project root to path (for core.config if needed, or just dotenv here)
-PROJECT_ROOT = Path(__file__).resolve().parents[3] # ORB_Live_Trader/backtest/pipeline -> ORB_Live_Trader -> .. -> Root
-# ORB_Live_Trader is the root for this context if we want to be self-contained?
-# But we need settings.ALPACA_API_KEY. Assuming .env is at ORB_Live_Trader/config/.env
+# Paths
+PIPELINE_DIR = Path(__file__).parent
+BACKTEST_DIR = PIPELINE_DIR.parent
+ORB_LIVE_TRADER_DIR = BACKTEST_DIR.parent  # ORB_Live_Trader/
 
-sys.path.insert(0, str(PROJECT_ROOT))
+# Add ORB_Live_Trader to path for dotenv
+sys.path.insert(0, str(ORB_LIVE_TRADER_DIR))
 
-# Load Env directly if core.config not available or complex
 from dotenv import load_dotenv
-load_dotenv(PROJECT_ROOT / "config" / ".env")
+load_dotenv(ORB_LIVE_TRADER_DIR / "config" / ".env")
 
 try:
     from alpaca.data.historical.news import NewsClient
@@ -32,17 +33,12 @@ except ImportError:
     print("Error: alpaca-py not installed.")
     sys.exit(1)
 
-# Config
-# Input Universe (Assuming it exists in main data dir or needs to be copied)
-# User mapped c:\Users\Olale\Documents\Codebase\Quant\Opening Range Breakout (ORB)
-DATA_DIR = PROJECT_ROOT / "data" 
-UNIVERSE_FILE = DATA_DIR / "backtest" / "orb" / "universe" / "universe_micro_full.parquet"
+# Universe file (micro-cap reference list)
+UNIVERSE_FILE = ORB_LIVE_TRADER_DIR / "data" / "reference" / "universe_micro_full.parquet"
 
-# Output relative to THIS script location
-PIPELINE_DIR = Path(__file__).parent
-BACKTEST_DIR = PIPELINE_DIR.parent
-OUTPUT_DIR = BACKTEST_DIR / "data" / "news"
-OUTPUT_FILE = OUTPUT_DIR / "news_micro_full_1y.parquet"
+# Output directory
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+OUTPUT_DIR = SHARED_DATA_ROOT / "news"
 
 BATCH_SIZE = 40  # Symbols per request
 
@@ -115,51 +111,57 @@ def fetch_news_batch(client, symbols, start_dt, end_dt):
     return all_items
 
 def main():
+    parser = argparse.ArgumentParser(description="Fetch news for ORB backtest pipeline")
+    parser.add_argument("--start-date", type=str, default="2021-01-01", help="Start date YYYY-MM-DD (default: 2021-01-01)")
+    parser.add_argument("--end-date", type=str, default="2021-12-31", help="End date YYYY-MM-DD (default: 2021-12-31)")
+    parser.add_argument("--output", type=str, default="news_micro_full_1y.parquet", help="Output filename in shared news directory (default: news_micro_full_1y.parquet)")
+    args = parser.parse_args()
+
     api_key = os.getenv("ALPACA_API_KEY")
-    api_secret = os.getenv("ALPACA_API_SECRET")
-    
+    api_secret = os.getenv("ALPACA_API_SECRET") or os.getenv("ALPACA_SECRET_KEY")
+
     if not api_key:
         print("Error: ALPACA_API_KEY not set in environment.")
         return
 
     if not UNIVERSE_FILE.exists():
         print(f"Error: Universe file not found: {UNIVERSE_FILE}")
-        # Try finding it in the project if path changed
-        # Fallback to local copy if user provided?
         return
 
     print(f"Loading universe from {UNIVERSE_FILE.name}...")
     df = pd.read_parquet(UNIVERSE_FILE)
-    
+
     col = 'ticker' if 'ticker' in df.columns else 'symbol'
     unique_symbols = sorted(df[col].unique())
     print(f"Total Symbols to Scan: {len(unique_symbols)}")
-    
-    # Setup Range (2021 Full Year)
-    start_dt = datetime(2021, 1, 1, tzinfo=timezone.utc)
-    end_dt = datetime(2021, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+    # Parse date range
+    start_dt = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    end_dt = datetime.strptime(args.end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
     print(f"Time Range: {start_dt.date()} to {end_dt.date()}")
+
+    output_file = OUTPUT_DIR / args.output
 
     # Init Client
     client = NewsClient(api_key, api_secret)
-    
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     all_news_rows = []
     chunks = [unique_symbols[i:i + BATCH_SIZE] for i in range(0, len(unique_symbols), BATCH_SIZE)]
-    
+
     print(f"Processing in {len(chunks)} batches...")
-    
+
     for i, batch in enumerate(tqdm(chunks, desc="Fetching News")):
         news_items = fetch_news_batch(client, batch, start_dt, end_dt)
         if news_items:
             all_news_rows.extend(news_items)
-            
+
         if (i + 1) % 10 == 0 and all_news_rows:
              temp_df = pd.DataFrame(all_news_rows)
              # Optional: temp save
              # temp_df.to_parquet(OUTPUT_DIR / "news_partial.parquet")
-    
+
     if not all_news_rows:
         print("No news found.")
         return
@@ -167,9 +169,9 @@ def main():
     print("Saving final dataset...")
     final_df = pd.DataFrame(all_news_rows)
     final_df = final_df.drop_duplicates(subset=['headline', 'symbol', 'timestamp'])
-    
-    final_df.to_parquet(OUTPUT_FILE)
-    print(f"✅ Saved {len(final_df)} news items to {OUTPUT_FILE}")
+
+    final_df.to_parquet(output_file)
+    print(f"✅ Saved {len(final_df)} news items to {output_file}")
 
 if __name__ == "__main__":
     main()

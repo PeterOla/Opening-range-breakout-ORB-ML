@@ -13,11 +13,12 @@ if env_file.exists():
 
 # ===== PATHS =====
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DATA_ROOT = REPO_ROOT / "data"
-DATA_RAW = DATA_ROOT / "raw"
-DATA_PROCESSED = DATA_ROOT / "processed"
-DATA_DELTAS = DATA_ROOT / "deltas"
-BACKTEST_DIR = DATA_ROOT / "backtest"
+REPO_DATA_ROOT = REPO_ROOT / "data"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+DATA_RAW = REPO_DATA_ROOT / "raw"
+DATA_PROCESSED = SHARED_DATA_ROOT / "processed"
+DATA_DELTAS = REPO_DATA_ROOT / "deltas"
+BACKTEST_DIR = REPO_DATA_ROOT / "backtest"
 
 DAILY_DIR = DATA_PROCESSED / "daily"
 FIVE_MIN_DIR = DATA_PROCESSED / "5min"

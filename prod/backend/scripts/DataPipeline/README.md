@@ -34,7 +34,7 @@ python -m DataPipeline.daily_sync [OPTIONS]
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--symbols` | List[str] | All symbols | Specific symbols to sync (e.g., `AAPL MSFT TSLA`). If omitted, syncs all symbols in `data/processed/daily/` |
+| `--symbols` | List[str] | All symbols | Specific symbols to sync (e.g., `AAPL MSFT TSLA`). If omitted, syncs all symbols in `C:\Users\Olale\Documents\Financial Data\processed\daily\` |
 | `--skip-fetch` | Flag | False | Skip Alpaca fetch step (use pre-existing data) |
 | `--skip-enrich` | Flag | False | Skip enrichment step (add metrics + shares) |
 | `--log-level` | Choice | INFO | Logging verbosity: DEBUG, INFO, WARNING, ERROR |
@@ -114,7 +114,7 @@ Outputs:
 ### Output Files
 
 After successful run, check:
-- **Parquet files**: `data/processed/daily/{SYMBOL}.parquet` (updated with new dates)
+- **Parquet files**: `C:\Users\Olale\Documents\Financial Data\processed\daily\{SYMBOL}.parquet` (updated with new dates)
 - **Log files**: `logs/orb_sync_*.log` (human-readable) and `logs/orb_sync_*.json` (structured results)
 
 ## Pipeline Stages
@@ -127,8 +127,8 @@ After successful run, check:
 - **Schema validation**: Converts Timestamp → string date, adds symbol column
 
 **Output**:
-- `data/processed/daily/{SYMBOL}.parquet` (date, symbol, open, high, low, close, volume)
-- `data/processed/5min/{SYMBOL}.parquet` (datetime, symbol, open, high, low, close, volume, trade_count, vwap)
+- `C:\Users\Olale\Documents\Financial Data\processed\daily\{SYMBOL}.parquet` (date, symbol, open, high, low, close, volume)
+- `C:\Users\Olale\Documents\Financial Data\processed\5min\{SYMBOL}.parquet` (datetime, symbol, open, high, low, close, volume, trade_count, vwap)
 
 ### 2. **Enrich** (enrichment.py)
 Computes metrics and adds required columns:
@@ -163,7 +163,7 @@ Pre/post-write validation:
 **CRITICAL**: Daily and 5-minute data use different datetime formats. Alpaca returns timestamps that must be converted correctly.
 
 ### Daily Data Format
-**File**: `data/processed/daily/{SYMBOL}.parquet`
+**File**: `C:\Users\Olale\Documents\Financial Data\processed\daily\{SYMBOL}.parquet`
 
 | Column | Type | Format | Example | Notes |
 |--------|------|--------|---------|-------|
@@ -192,7 +192,7 @@ Pre/post-write validation:
 - **Fix** (lines 201-208): Check dtype first, only convert if string/object, otherwise add timezone if missing
 
 ### 5-Minute Data Format
-**File**: `data/processed/5min/{SYMBOL}.parquet`
+**File**: `C:\Users\Olale\Documents\Financial Data\processed\5min\{SYMBOL}.parquet`
 
 | Column | Type | Format | Example | Notes |
 |--------|------|--------|---------|-------|

@@ -7,7 +7,7 @@
 ## Steps
 
 ### 1. Create daily metrics pre-computation script
-- Read all daily parquet files from `data/processed/daily/`
+- Read all daily parquet files from `C:\Users\Olale\Documents\Financial Data\processed\daily\`
 - Compute ATR (14-day), avg volume (14-day), prev close for each symbol × date
 - Store in new `daily_metrics_historical` table
 - ~5 years × 250 days × 5000 symbols = 6.25M rows
@@ -60,8 +60,8 @@
 
 | Source | Location | Format |
 |--------|----------|--------|
-| 5-min bars | `data/processed/5min/*.parquet` | ~5000 files, 2021+ |
-| Daily bars | `data/processed/daily/*.parquet` | ~5000 files, 2021+ |
+| 5-min bars | `C:\Users\Olale\Documents\Financial Data\processed\5min\*.parquet` | ~5000 files, 2021+ |
+| Daily bars | `C:\Users\Olale\Documents\Financial Data\processed\daily\*.parquet` | ~5000 files, 2021+ |
 
 ## Database Tables (Existing)
 

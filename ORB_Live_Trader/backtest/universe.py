@@ -14,10 +14,11 @@ import json
 # Setup Paths
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
 
-DATA_DIR_5MIN = DATA_DIR / "processed" / "5min"
-DATA_DIR_DAILY = DATA_DIR / "processed" / "daily"
-INPUT_SCORED_NEWS = DATA_DIR / "research" / "news" / "news_micro_full_1y_scored.parquet"
+DATA_DIR_5MIN = SHARED_DATA_ROOT / "processed" / "5min"
+DATA_DIR_DAILY = SHARED_DATA_ROOT / "processed" / "daily"
+INPUT_SCORED_NEWS = SHARED_DATA_ROOT / "news" / "news_micro_full_1y_scored.parquet"
 
 OR_START = time(9, 30)
 OR_END = time(16, 0)

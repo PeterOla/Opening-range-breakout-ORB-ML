@@ -138,7 +138,7 @@ Start executing the ORB strategy on TradeZero with automation, while keeping the
 - Ensure the backtester uses the universe file’s shares column, not ad-hoc fetches.
 - Emit artefacts:
   - `data/backtest/universe_*.parquet` includes `shares_outstanding` and `shares_source`.
-  - `data/processed/shares_outstanding.parquet` (or similar canonical cache).
+  - `C:\Users\Olale\Documents\Financial Data\processed\shares_outstanding.parquet` (or similar canonical cache).
 
 **Acceptance criteria**
 - “Unknown shares” contribution to PnL can be computed automatically after each run.

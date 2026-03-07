@@ -32,7 +32,8 @@ from transformers import BertTokenizer, BertForSequenceClassification
 # Folders
 ORB_ROOT = Path(__file__).resolve().parents[1]
 data_dir = ORB_ROOT / "data"
-news_dir = data_dir / "news"
+shared_data_root = Path(r"C:\Users\Olale\Documents\Financial Data")
+news_dir = shared_data_root / "news"
 sentiment_dir = data_dir / "sentiment"
 reference_dir = data_dir / "reference"
 bars_root = data_dir / "bars"

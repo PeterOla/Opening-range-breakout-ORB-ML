@@ -40,7 +40,7 @@ def _day_partition_path(symbol: str, ts: datetime | date, interval: str = '1min'
 def query_symbol_range(symbol: str, start_ts: datetime, end_ts: datetime, interval: str = "1min") -> pd.DataFrame:
     """Query parquet files for a symbol in a time range and return a pandas DataFrame.
 
-    This function looks for parquet files under `data/processed/<interval>/symbol=<symbol>/year=.../month=.../day=...`.
+    This function looks for parquet files under `C:\Users\Olale\Documents\Financial Data\processed\<interval>\symbol=<symbol>\year=...\month=...\day=...`.
     If multiple day partitions are requested, it scans the matching files.
     """
     con = _connect()
@@ -55,7 +55,7 @@ def query_symbol_range(symbol: str, start_ts: datetime, end_ts: datetime, interv
         dt = dt + pd.to_timedelta(1, unit="D")
 
     # Guard: if no partitioned parts exist, we may still have flat per-symbol parquet files
-    # (e.g. DataPipeline writes: data/processed/5min/<SYMBOL>.parquet).
+    # (e.g. DataPipeline writes: C:\Users\Olale\Documents\Financial Data\processed\5min\<SYMBOL>.parquet).
     files = []
     for p in parts:
         files.extend([os.path.abspath(fp) for fp in glob.glob(p)])
@@ -133,7 +133,7 @@ def list_available_symbols(interval: str = '1min') -> List[str]:
     if not os.path.exists(base):
         return []
 
-    # Prefer partitioned layout: data/processed/<interval>/symbol=XYZ/...
+    # Prefer partitioned layout: C:\Users\Olale\Documents\Financial Data\processed\<interval>\symbol=XYZ\...
     symbols: list[str] = []
     for item in os.listdir(base):
         if item.startswith('symbol='):
@@ -142,7 +142,7 @@ def list_available_symbols(interval: str = '1min') -> List[str]:
     if symbols:
         return symbols
 
-    # Fallback: flat layout: data/processed/<interval>/XYZ.parquet
+    # Fallback: flat layout: C:\Users\Olale\Documents\Financial Data\processed\<interval>\XYZ.parquet
     out: list[str] = []
     for item in os.listdir(base):
         if item.lower().endswith('.parquet'):

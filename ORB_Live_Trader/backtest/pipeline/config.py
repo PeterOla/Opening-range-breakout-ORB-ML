@@ -24,9 +24,10 @@ if env_file.exists():
 
 # ===== PATHS =====
 # Data directories (shared with main project)
-DATA_ROOT = REPO_ROOT / "data"
-DATA_RAW = DATA_ROOT / "raw"
-DATA_PROCESSED = DATA_ROOT / "processed"
+REPO_DATA_ROOT = REPO_ROOT / "data"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+DATA_RAW = REPO_DATA_ROOT / "raw"
+DATA_PROCESSED = SHARED_DATA_ROOT / "processed"
 
 DAILY_DIR = DATA_PROCESSED / "daily"
 FIVE_MIN_DIR = DATA_PROCESSED / "5min"

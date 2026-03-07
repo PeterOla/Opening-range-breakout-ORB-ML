@@ -64,7 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description="Enrich trade logs with historical news data.")
     parser.add_argument("--trades", required=True, help="Path to the input trades parquet/csv file")
     parser.add_argument("--output", default="data/analysis/trades_with_news.parquet", help="Path to save enriched trades")
-    parser.add_argument("--news", default="data/news/processed/news_mapped_2012_2025.parquet", help="Path to processed news")
+    parser.add_argument("--news", default=r"C:\Users\Olale\Documents\Financial Data\news\processed\news_mapped_2012_2025.parquet", help="Path to processed news")
     
     args = parser.parse_args()
     

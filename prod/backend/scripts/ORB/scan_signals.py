@@ -8,9 +8,10 @@ from core.config import settings, get_strategy_config
 
 # Setup paths
 BASE_DIR = Path(__file__).resolve().parents[4]
-DATA_DIR = BASE_DIR / "data"
-DAILY_DIR = DATA_DIR / "processed" / "daily"
-RAW_DIR = DATA_DIR / "raw"
+REPO_DATA_DIR = BASE_DIR / "data"
+SHARED_DATA_ROOT = Path(r"C:\Users\Olale\Documents\Financial Data")
+DAILY_DIR = SHARED_DATA_ROOT / "processed" / "daily"
+RAW_DIR = REPO_DATA_DIR / "raw"
 
 def load_ticker_info():
     """Load ticker info including shares outstanding."""

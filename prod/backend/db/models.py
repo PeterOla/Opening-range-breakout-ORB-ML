@@ -367,7 +367,7 @@ class DailyMetricsHistorical(Base):
     Pre-computed daily metrics for all symbols across all historical dates.
     
     Used by bulk backtest to avoid recomputing ATR/avg_vol for each date.
-    Computed from parquet files in data/processed/daily/
+    Computed from parquet files in C:\Users\Olale\Documents\Financial Data\processed\daily\
     """
     __tablename__ = "daily_metrics_historical"
     

@@ -16,7 +16,7 @@ Local development setup (Postgres + DuckDB + Parquet)
 
 5) Create necessary local directories:
 
-    mkdir -p data/processed/1min
+    mkdir -p "C:\Users\Olale\Documents\Financial Data\processed\1min"
     mkdir -p data/deltas/1min
 
 6) Merge deltas for all symbols (runs `sync_parquet.py` which calls `scripts/eod_merge` for each delta directory):
@@ -29,7 +29,7 @@ Local development setup (Postgres + DuckDB + Parquet)
 
 Notes:
 - By default the app uses DuckDB for historical queries (local file `./data/duckdb_local.db`).
-- The live scanner's base filters (price/ATR/avg volume) prefer `daily_bars` in SQL, but will fall back to `data/processed/daily/*.parquet` via DuckDB if the DB table is missing/empty.
+- The live scanner's base filters (price/ATR/avg volume) prefer `daily_bars` in SQL, but will fall back to `C:\Users\Olale\Documents\Financial Data\processed\daily\*.parquet` via DuckDB if the DB table is missing/empty.
 - This setup is local-only; no Neon or cloud storage is required.
 
 ---

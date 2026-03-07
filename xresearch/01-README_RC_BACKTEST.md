@@ -110,7 +110,7 @@ python scripts/generate_rc_report.py \
 - Point-in-time data (no look-ahead bias)
 
 ### Stage 2: Daily Enrichment
-`enrich_daily_data.py` → `data/processed/daily/{SYMBOL}.parquet`
+`enrich_daily_data.py` → `C:\Users\Olale\Documents\Financial Data\processed\daily\{SYMBOL}.parquet`
 - Adds shares_outstanding (enriched)
 - 5,012 daily parquet files
 - Point-in-time joins (most recent report on/before each date)

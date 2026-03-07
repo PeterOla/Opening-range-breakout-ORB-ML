@@ -165,7 +165,7 @@ def _get_universe_with_metrics_from_local_parquet(
     allowed_symbols: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return latest daily metrics per symbol from local Parquet using DuckDB."""
-    base = Path(getattr(settings, "PARQUET_BASE_PATH", "./data/processed"))
+    base = Path(getattr(settings, "PARQUET_BASE_PATH", r"C:\Users\Olale\Documents\Financial Data\processed"))
     glob_path = str((base / "daily" / "*.parquet").as_posix())
 
     con = duckdb.connect(str(getattr(settings, "DUCKDB_PATH", "./data/duckdb_local.db")))

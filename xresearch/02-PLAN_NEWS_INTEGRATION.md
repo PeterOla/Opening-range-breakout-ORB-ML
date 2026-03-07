@@ -8,13 +8,13 @@
     - [x] Inputs: Trade logs or Universe parquet (to identify symbols and dates).
     - [x] API: Alpaca Historical News (`GET /v1beta1/news`).
     - [x] Parallelism: Fetch efficiently (by symbol batches or huge date chunks) to handle 5 years.
-    - [x] Output: `data/news/raw/alpaca_news_{year}.parquet`.
+    - [x] Output: `C:\Users\Olale\Documents\Financial Data\news\raw\alpaca_news_{year}.parquet`.
 - [x] **Validate Coverage**: Ensure we have news coverage for >90% of our universe top candidates.
 
 ## 2. Feature Engineering (Mapping)
 - [x] **Map News to Trading Days**:
     - [x] Logic: Assign news to a trading day if it occurred *after* the previous close (16:00) and *before* Open (09:30).
-    - [x] Output: `data/news/processed/news_mapped_2012_2025.parquet` (Index: Date, Symbol; Cols: Headlines, Count).
+    - [x] Output: `C:\Users\Olale\Documents\Financial Data\news\processed\news_mapped_2012_2025.parquet` (Index: Date, Symbol; Cols: Headlines, Count).
 - [x] **Enrich Universes (Strategy Data)**:
     - [x] Script: `prod/backend/scripts/data/enrich_universe_with_news.py`.
     - [x] Logic: Join Universe with News -> Create `_news_only.parquet` subset.

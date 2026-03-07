@@ -253,9 +253,9 @@ All scripts have been consolidated into `ORB_Live_Trader/backtest/`:
 ```
 Raw News (Alpaca API)
     ↓
-data/news/news_micro_full_1y.parquet
+C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y.parquet
     ↓ [FinBERT scoring]
-data/news/news_micro_full_1y_scored.parquet
+C:\Users\Olale\Documents\Financial Data\news\news_micro_full_1y_scored.parquet
     ↓ [Attribution + enrichment]
 data/universe/universe_sentiment_0.9.parquet
     ↓ [Backtest simulation]
